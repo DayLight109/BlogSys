@@ -1,0 +1,20 @@
+CREATE TABLE `comments` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `post_id` BIGINT UNSIGNED NOT NULL,
+  `parent_id` BIGINT UNSIGNED DEFAULT NULL,
+  `author_name` VARCHAR(100) NOT NULL,
+  `author_email` VARCHAR(100) DEFAULT NULL,
+  `author_website` VARCHAR(200) DEFAULT NULL,
+  `content` TEXT NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
+  `ip` VARCHAR(45) DEFAULT NULL,
+  `user_agent` VARCHAR(500) DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_comments_post_status_created` (`post_id`, `status`, `created_at`),
+  KEY `idx_comments_status` (`status`),
+  KEY `idx_comments_parent` (`parent_id`),
+  CONSTRAINT `fk_comments_post` FOREIGN KEY (`post_id`) REFERENCES `posts` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_comments_parent` FOREIGN KEY (`parent_id`) REFERENCES `comments` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

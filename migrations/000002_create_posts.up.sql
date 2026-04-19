@@ -1,0 +1,22 @@
+CREATE TABLE `posts` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `title` VARCHAR(255) NOT NULL,
+  `slug` VARCHAR(255) NOT NULL,
+  `summary` VARCHAR(500) DEFAULT NULL,
+  `content_md` MEDIUMTEXT NOT NULL,
+  `content_html` MEDIUMTEXT NOT NULL,
+  `cover_url` VARCHAR(500) DEFAULT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'draft',
+  `tags` JSON DEFAULT NULL,
+  `author_id` BIGINT UNSIGNED NOT NULL,
+  `view_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `published_at` TIMESTAMP NULL DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_posts_slug` (`slug`),
+  KEY `idx_posts_status_published_at` (`status`, `published_at`),
+  KEY `idx_posts_author` (`author_id`),
+  FULLTEXT KEY `ft_posts_title_content` (`title`, `content_md`) WITH PARSER ngram,
+  CONSTRAINT `fk_posts_author` FOREIGN KEY (`author_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
