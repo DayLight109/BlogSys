@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -171,6 +172,105 @@ func (s *PostService) Update(id uint64, in PostInput) (*model.Post, error) {
 
 func (s *PostService) Delete(id uint64) error {
 	return s.posts.Delete(id)
+}
+
+// GetNeighbors returns prev/next published posts around the given slug.
+func (s *PostService) GetNeighbors(slug string) (*model.Post, *model.Post, error) {
+	current, err := s.posts.FindBySlug(slug)
+	if err != nil {
+		return nil, nil, err
+	}
+	if current == nil || current.Status != model.PostStatusPublished {
+		return nil, nil, ErrPostNotFound
+	}
+	return s.posts.FindNeighbors(current.ID, current.PublishedAt)
+}
+
+// GetRelated returns up to `limit` other published posts that share tags with the given slug.
+func (s *PostService) GetRelated(slug string, limit int) ([]model.Post, error) {
+	if limit <= 0 {
+		limit = 3
+	}
+	current, err := s.posts.FindBySlug(slug)
+	if err != nil {
+		return nil, err
+	}
+	if current == nil || current.Status != model.PostStatusPublished {
+		return nil, ErrPostNotFound
+	}
+	if len(current.Tags) == 0 {
+		return nil, nil
+	}
+	return s.posts.FindRelated([]string(current.Tags), current.ID, limit)
+}
+
+// ArchiveEntry is one year in the archive page.
+type ArchiveEntry struct {
+	Year  int          `json:"year"`
+	Posts []model.Post `json:"posts"`
+}
+
+// Archive groups published posts by year (DESC).
+func (s *PostService) Archive() ([]ArchiveEntry, error) {
+	posts, err := s.posts.Archive()
+	if err != nil {
+		return nil, err
+	}
+	byYear := make(map[int][]model.Post)
+	years := make([]int, 0)
+	for _, p := range posts {
+		t := p.CreatedAt
+		if p.PublishedAt != nil {
+			t = *p.PublishedAt
+		}
+		y := t.Year()
+		if _, ok := byYear[y]; !ok {
+			years = append(years, y)
+		}
+		byYear[y] = append(byYear[y], p)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(years)))
+	out := make([]ArchiveEntry, 0, len(years))
+	for _, y := range years {
+		out = append(out, ArchiveEntry{Year: y, Posts: byYear[y]})
+	}
+	return out, nil
+}
+
+// Search — FULLTEXT over title + content_md.
+func (s *PostService) Search(q string, page, size int) ([]model.Post, int64, error) {
+	return s.posts.Search(q, page, size)
+}
+
+// TagCount is an aggregated tag with its post count.
+type TagCount struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
+}
+
+// ListTags aggregates all tags from published posts with counts, sorted by count DESC then name ASC.
+func (s *PostService) ListTags() ([]TagCount, error) {
+	tagArrays, err := s.posts.AllTagsFromPublished()
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int)
+	for _, arr := range tagArrays {
+		for _, t := range arr {
+			counts[t]++
+		}
+	}
+	out := make([]TagCount, 0, len(counts))
+	for t, c := range counts {
+		out = append(out, TagCount{Tag: t, Count: c})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Tag < out[j].Tag
+	})
+	return out, nil
 }
 
 func normalizeSlug(slug, fallbackTitle string) string {

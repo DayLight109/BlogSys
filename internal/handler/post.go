@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/lilce/blog-api/internal/middleware"
+	"github.com/lilce/blog-api/internal/model"
 	"github.com/lilce/blog-api/internal/service"
 )
 
@@ -153,4 +154,92 @@ func reqToInput(req postReq) service.PostInput {
 		Tags:     req.Tags,
 		Publish:  req.Publish,
 	}
+}
+
+// GetNeighbors returns { prev, next } for the given slug.
+func (h *PostHandler) GetNeighbors(c *gin.Context) {
+	slug := c.Param("slug")
+	prev, next, err := h.svc.GetNeighbors(slug)
+	if err != nil {
+		if errors.Is(err, service.ErrPostNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	prev = stripBody(prev)
+	next = stripBody(next)
+	c.JSON(http.StatusOK, gin.H{"prev": prev, "next": next})
+}
+
+// GetRelated returns up to `limit` posts sharing tags with the given slug.
+func (h *PostHandler) GetRelated(c *gin.Context) {
+	slug := c.Param("slug")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "3"))
+	if limit <= 0 || limit > 12 {
+		limit = 3
+	}
+	posts, err := h.svc.GetRelated(slug, limit)
+	if err != nil {
+		if errors.Is(err, service.ErrPostNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for i := range posts {
+		posts[i].ContentMD = ""
+		posts[i].ContentHTML = ""
+	}
+	c.JSON(http.StatusOK, gin.H{"items": posts})
+}
+
+// Archive returns all published posts grouped by year.
+func (h *PostHandler) Archive(c *gin.Context) {
+	entries, err := h.svc.Archive()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for i := range entries {
+		for j := range entries[i].Posts {
+			entries[i].Posts[j].ContentMD = ""
+			entries[i].Posts[j].ContentHTML = ""
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"items": entries})
+}
+
+// Search — ?q=xxx&page=1&size=20
+func (h *PostHandler) Search(c *gin.Context) {
+	q := c.Query("q")
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
+	posts, total, err := h.svc.Search(q, page, size)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for i := range posts {
+		posts[i].ContentMD = ""
+		posts[i].ContentHTML = ""
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"items": posts,
+		"total": total,
+		"page":  page,
+		"size":  size,
+		"q":     q,
+	})
+}
+
+func stripBody(p *model.Post) *model.Post {
+	if p == nil {
+		return nil
+	}
+	p.ContentMD = ""
+	p.ContentHTML = ""
+	return p
 }

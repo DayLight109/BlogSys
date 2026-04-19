@@ -61,6 +61,7 @@ func main() {
 	authH := handler.NewAuthHandler(authSvc)
 	postH := handler.NewPostHandler(postSvc)
 	commentH := handler.NewCommentHandler(commentSvc, postSvc)
+	tagH := handler.NewTagHandler(postSvc)
 
 	api := r.Group("/api")
 	{
@@ -78,9 +79,15 @@ func main() {
 		{
 			posts.GET("", postH.ListPublic)
 			posts.GET("/:slug", postH.GetBySlug)
+			posts.GET("/:slug/neighbors", postH.GetNeighbors)
+			posts.GET("/:slug/related", postH.GetRelated)
 			posts.GET("/:slug/comments", commentH.ListForSlug)
 			posts.POST("/:slug/comments", commentH.SubmitForSlug)
 		}
+
+		api.GET("/archive", postH.Archive)
+		api.GET("/search", postH.Search)
+		api.GET("/tags", tagH.List)
 
 		admin := api.Group("/admin")
 		admin.Use(middleware.JWTAuth(tokenMgr), middleware.AdminOnly())
