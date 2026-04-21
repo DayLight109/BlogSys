@@ -17,6 +17,7 @@ import (
 	"github.com/lilce/blog-api/internal/database"
 	"github.com/lilce/blog-api/internal/handler"
 	"github.com/lilce/blog-api/internal/middleware"
+	"github.com/lilce/blog-api/internal/model"
 	"github.com/lilce/blog-api/internal/repository"
 	"github.com/lilce/blog-api/internal/service"
 )
@@ -30,6 +31,12 @@ func main() {
 	}
 	log.Println("mysql connected")
 
+	// AutoMigrate only for additive, low-risk tables/columns introduced after
+	// the initial golang-migrate run. Core schema still lives in /migrations.
+	if err := db.AutoMigrate(&model.Setting{}, &model.Post{}); err != nil {
+		log.Fatalf("automigrate: %v", err)
+	}
+
 	rdb, err := database.OpenRedis(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 	if err != nil {
 		log.Fatalf("redis: %v", err)
@@ -40,14 +47,19 @@ func main() {
 	userRepo := repository.NewUserRepository(db)
 	postRepo := repository.NewPostRepository(db)
 	commentRepo := repository.NewCommentRepository(db)
+	settingRepo := repository.NewSettingRepository(db)
 
 	tokenMgr := auth.NewTokenManager(cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 	authSvc := service.NewAuthService(userRepo, tokenMgr)
 	postSvc := service.NewPostService(postRepo)
-	commentSvc := service.NewCommentService(commentRepo, postRepo)
+	settingSvc := service.NewSettingService(settingRepo)
+	commentSvc := service.NewCommentService(commentRepo, postRepo, settingSvc)
 
 	if err := authSvc.EnsureAdminSeed("admin", "admin123"); err != nil {
 		log.Fatalf("seed admin: %v", err)
+	}
+	if err := settingSvc.EnsureDefaults(); err != nil {
+		log.Fatalf("seed settings: %v", err)
 	}
 
 	if cfg.AppEnv == "prod" {
@@ -55,6 +67,11 @@ func main() {
 	}
 
 	r := gin.New()
+	// Ensure URL-encoded path segments (e.g. Chinese slugs sent as %E5%85%B3…)
+	// are decoded before c.Param() — otherwise lookups for posts whose slug
+	// contains non-ASCII characters 404 because the DB stores the raw form.
+	r.UseRawPath = true
+	r.UnescapePathValues = true
 	r.Use(gin.Logger(), gin.Recovery(), middleware.CORS(cfg.CORSOrigin))
 
 	healthH := handler.NewHealthHandler()
@@ -62,6 +79,8 @@ func main() {
 	postH := handler.NewPostHandler(postSvc)
 	commentH := handler.NewCommentHandler(commentSvc, postSvc)
 	tagH := handler.NewTagHandler(postSvc)
+	settingH := handler.NewSettingHandler(settingSvc)
+	uploadH := handler.NewUploadHandler(cfg.UploadDir, "/uploads")
 
 	api := r.Group("/api")
 	{
@@ -88,6 +107,7 @@ func main() {
 		api.GET("/archive", postH.Archive)
 		api.GET("/search", postH.Search)
 		api.GET("/tags", tagH.List)
+		api.GET("/settings", settingH.GetPublic)
 
 		admin := api.Group("/admin")
 		admin.Use(middleware.JWTAuth(tokenMgr), middleware.AdminOnly())
@@ -103,9 +123,19 @@ func main() {
 			ac := admin.Group("/comments")
 			{
 				ac.GET("", commentH.ListAdmin)
+				ac.POST("", commentH.AdminReply)
 				ac.PATCH("/:id", commentH.UpdateStatus)
 				ac.DELETE("/:id", commentH.Delete)
 			}
+			at := admin.Group("/tags")
+			{
+				at.PATCH("/:name/rename", tagH.Rename)
+				at.POST("/merge", tagH.Merge)
+				at.DELETE("/:name", tagH.Delete)
+			}
+			admin.GET("/settings", settingH.GetAdmin)
+			admin.PUT("/settings", settingH.Update)
+			admin.POST("/upload", uploadH.Create)
 		}
 	}
 

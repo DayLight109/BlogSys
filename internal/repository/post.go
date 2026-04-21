@@ -54,7 +54,7 @@ func (r *PostRepository) List(q PostListQuery) ([]model.Post, int64, error) {
 
 	var posts []model.Post
 	err := tx.
-		Order("COALESCE(published_at, created_at) DESC, id DESC").
+		Order("pinned DESC, COALESCE(published_at, created_at) DESC, id DESC").
 		Limit(q.Size).
 		Offset((q.Page - 1) * q.Size).
 		Find(&posts).Error
@@ -280,4 +280,156 @@ func (r *PostRepository) AllTagsFromPublished() ([]model.StringArray, error) {
 		out = append(out, p.Tags)
 	}
 	return out, nil
+}
+
+// findPostsContainingTag loads all posts whose tags JSON array contains `tag`.
+func (r *PostRepository) findPostsContainingTag(tx *gorm.DB, tag string) ([]model.Post, error) {
+	tagJSON, err := json.Marshal(tag)
+	if err != nil {
+		return nil, err
+	}
+	var posts []model.Post
+	if err := tx.Model(&model.Post{}).
+		Select("id, tags").
+		Where("JSON_CONTAINS(tags, ?)", string(tagJSON)).
+		Find(&posts).Error; err != nil {
+		return nil, err
+	}
+	return posts, nil
+}
+
+// replaceTagInSlice removes any occurrence of `from` and adds `to` (deduped).
+// Returns the new slice and whether a change occurred.
+func replaceTagInSlice(tags []string, from, to string) ([]string, bool) {
+	found := false
+	seen := make(map[string]struct{}, len(tags)+1)
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		if t == from {
+			found = true
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	if !found {
+		return tags, false
+	}
+	if to != "" {
+		if _, ok := seen[to]; !ok {
+			out = append(out, to)
+		}
+	}
+	return out, true
+}
+
+// RenameTag updates every post that has `from` in its tags JSON array, replacing it with `to`.
+func (r *PostRepository) RenameTag(from, to string) error {
+	if from == "" || to == "" || from == to {
+		return nil
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		posts, err := r.findPostsContainingTag(tx, from)
+		if err != nil {
+			return err
+		}
+		for _, p := range posts {
+			newTags, changed := replaceTagInSlice([]string(p.Tags), from, to)
+			if !changed {
+				continue
+			}
+			if err := tx.Model(&model.Post{}).Where("id = ?", p.ID).
+				Update("tags", model.StringArray(newTags)).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// MergeTags replaces any of `from` with `to` across all posts, deduped.
+func (r *PostRepository) MergeTags(from []string, to string) error {
+	if to == "" || len(from) == 0 {
+		return nil
+	}
+	fromSet := make(map[string]struct{}, len(from))
+	for _, f := range from {
+		if f != "" && f != to {
+			fromSet[f] = struct{}{}
+		}
+	}
+	if len(fromSet) == 0 {
+		return nil
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		// Load candidate posts: any that contain at least one of the from tags.
+		seen := make(map[uint64]struct{})
+		var all []model.Post
+		for f := range fromSet {
+			posts, err := r.findPostsContainingTag(tx, f)
+			if err != nil {
+				return err
+			}
+			for _, p := range posts {
+				if _, ok := seen[p.ID]; ok {
+					continue
+				}
+				seen[p.ID] = struct{}{}
+				all = append(all, p)
+			}
+		}
+		for _, p := range all {
+			rewritten := make([]string, 0, len(p.Tags))
+			dedupe := make(map[string]struct{})
+			replaced := false
+			for _, t := range p.Tags {
+				if _, ok := fromSet[t]; ok {
+					replaced = true
+					continue
+				}
+				if _, ok := dedupe[t]; ok {
+					continue
+				}
+				dedupe[t] = struct{}{}
+				rewritten = append(rewritten, t)
+			}
+			if replaced {
+				if _, ok := dedupe[to]; !ok {
+					rewritten = append(rewritten, to)
+				}
+			}
+			if err := tx.Model(&model.Post{}).Where("id = ?", p.ID).
+				Update("tags", model.StringArray(rewritten)).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// DeleteTag removes `name` from every post's tags JSON array.
+func (r *PostRepository) DeleteTag(name string) error {
+	if name == "" {
+		return nil
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		posts, err := r.findPostsContainingTag(tx, name)
+		if err != nil {
+			return err
+		}
+		for _, p := range posts {
+			newTags, changed := replaceTagInSlice([]string(p.Tags), name, "")
+			if !changed {
+				continue
+			}
+			if err := tx.Model(&model.Post{}).Where("id = ?", p.ID).
+				Update("tags", model.StringArray(newTags)).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

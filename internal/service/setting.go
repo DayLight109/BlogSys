@@ -1,0 +1,220 @@
+package service
+
+import (
+	"encoding/json"
+	"errors"
+
+	"github.com/lilce/blog-api/internal/markdown"
+	"github.com/lilce/blog-api/internal/repository"
+)
+
+var ErrInvalidSettingKey = errors.New("invalid setting key")
+
+// SettingService exposes a typed view of the site_settings key-value table and
+// handles rendering About body_md → body_html lazily.
+type SettingService struct {
+	repo *repository.SettingRepository
+}
+
+func NewSettingService(repo *repository.SettingRepository) *SettingService {
+	return &SettingService{repo: repo}
+}
+
+// Default keys known to the app. Any other key PUT by admin is still persisted
+// but won't be surfaced by the typed GetPublic/GetAdmin shape.
+const (
+	KeyBrandName         = "brand.name"
+	KeyBrandTagline      = "brand.tagline"
+	KeyFooterText        = "footer.text"
+	KeyContactEmail      = "contact.email"
+	KeyContactGithub     = "contact.github"
+	KeyAboutHeroTitle    = "about.hero_title"
+	KeyAboutBodyMd       = "about.body_md"
+	KeySeoSiteTitle      = "seo.site_title"
+	KeySeoSiteDescription = "seo.site_description"
+)
+
+var knownKeys = map[string]struct{}{
+	KeyBrandName:          {},
+	KeyBrandTagline:       {},
+	KeyFooterText:         {},
+	KeyContactEmail:       {},
+	KeyContactGithub:      {},
+	KeyAboutHeroTitle:     {},
+	KeyAboutBodyMd:        {},
+	KeySeoSiteTitle:       {},
+	KeySeoSiteDescription: {},
+}
+
+// Public is the shape served to anonymous readers on /api/settings.
+type Public struct {
+	Brand   Brand   `json:"brand"`
+	Footer  Footer  `json:"footer"`
+	Contact Contact `json:"contact"`
+	SEO     SEO     `json:"seo"`
+	About   About   `json:"about"`
+}
+
+type Admin struct {
+	Public
+	AboutBodyMd string `json:"aboutBodyMd"`
+}
+
+type Brand struct {
+	Name    string `json:"name"`
+	Tagline string `json:"tagline"`
+}
+
+type Footer struct {
+	Text string `json:"text"`
+}
+
+type Contact struct {
+	Email  string `json:"email"`
+	Github string `json:"github"`
+}
+
+type SEO struct {
+	SiteTitle       string `json:"siteTitle"`
+	SiteDescription string `json:"siteDescription"`
+}
+
+type About struct {
+	HeroTitle string `json:"heroTitle"`
+	BodyHTML  string `json:"bodyHtml"`
+}
+
+// EnsureDefaults seeds keys that don't yet exist so a fresh DB boots with sensible copy.
+func (s *SettingService) EnsureDefaults() error {
+	defaults := map[string]string{
+		KeyBrandName:          "Kiri",
+		KeyBrandTagline:       "· notes & essays",
+		KeyFooterText:         "Written in a quiet corner of the internet · 独立写作",
+		KeyContactEmail:       "hello@example.com",
+		KeyContactGithub:      "https://github.com/kiri",
+		KeyAboutHeroTitle:     "Hello, I'm Kiri.",
+		KeyAboutBodyMd:        defaultAboutMd,
+		KeySeoSiteTitle:       "Kiri · Notes",
+		KeySeoSiteDescription: "A personal journal on software, systems, and the craft of writing.",
+	}
+	for k, v := range defaults {
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		if err := s.repo.UpsertIfAbsent(k, string(encoded)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const defaultAboutMd = `I build software for a living and write about it for the rest of my life.
+
+这里是我写作的一隅。白天我写代码 —— Go、TypeScript、分布式系统,偶尔碰一点前端。晚上我来这里把一些想清楚了 —— 或者还没想清楚 —— 的东西写下来。
+
+This blog is built with [Next.js 16](https://nextjs.org), [Go](https://go.dev), MySQL and Redis. No CMS, no template.
+
+## Writing, slowly.
+
+*Nothing is published in a hurry.* 文章会隔几天甚至几周才有新的。想订阅就收藏一下 [RSS](/feed.xml),或者直接发邮件给我。
+`
+
+func (s *SettingService) load() (map[string]string, error) {
+	items, err := s.repo.All()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(items))
+	for _, it := range items {
+		var v string
+		if err := json.Unmarshal([]byte(it.Value), &v); err != nil {
+			// Fallback: if the stored value is not a JSON string (e.g. an object),
+			// keep the raw JSON — future enhancement for complex values.
+			v = it.Value
+		}
+		out[it.Key] = v
+	}
+	return out, nil
+}
+
+// GetPublic returns the site-wide public settings; AboutBodyHtml is rendered from body_md.
+func (s *SettingService) GetPublic() (*Public, error) {
+	vals, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	return s.buildPublic(vals), nil
+}
+
+func (s *SettingService) buildPublic(vals map[string]string) *Public {
+	body := vals[KeyAboutBodyMd]
+	html, err := markdown.Render(body)
+	if err != nil {
+		html = ""
+	}
+	return &Public{
+		Brand: Brand{
+			Name:    vals[KeyBrandName],
+			Tagline: vals[KeyBrandTagline],
+		},
+		Footer: Footer{Text: vals[KeyFooterText]},
+		Contact: Contact{
+			Email:  vals[KeyContactEmail],
+			Github: vals[KeyContactGithub],
+		},
+		SEO: SEO{
+			SiteTitle:       vals[KeySeoSiteTitle],
+			SiteDescription: vals[KeySeoSiteDescription],
+		},
+		About: About{
+			HeroTitle: vals[KeyAboutHeroTitle],
+			BodyHTML:  html,
+		},
+	}
+}
+
+// GetAdmin is GetPublic + raw markdown source, in a single DB round-trip.
+func (s *SettingService) GetAdmin() (*Admin, error) {
+	vals, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	return &Admin{
+		Public:      *s.buildPublic(vals),
+		AboutBodyMd: vals[KeyAboutBodyMd],
+	}, nil
+}
+
+// Update accepts { key: stringValue } map and upserts each.
+// Unknown keys are rejected to prevent accidental garbage.
+func (s *SettingService) Update(updates map[string]string) error {
+	for k := range updates {
+		if _, ok := knownKeys[k]; !ok {
+			return ErrInvalidSettingKey
+		}
+	}
+	for k, v := range updates {
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		if err := s.repo.Upsert(k, string(encoded)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BrandName is a convenience accessor used by the comment admin-reply flow.
+func (s *SettingService) BrandName() (string, error) {
+	v, err := s.repo.Get(KeyBrandName)
+	if err != nil || v == nil {
+		return "Author", err
+	}
+	var name string
+	if err := json.Unmarshal([]byte(v.Value), &name); err != nil || name == "" {
+		return "Author", nil
+	}
+	return name, nil
+}

@@ -131,3 +131,27 @@ func (h *CommentHandler) Delete(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
+
+type adminReplyReq struct {
+	PostID   uint64  `json:"postId" binding:"required"`
+	ParentID *uint64 `json:"parentId"`
+	Content  string  `json:"content" binding:"required,min=1,max=5000"`
+}
+
+func (h *CommentHandler) AdminReply(c *gin.Context) {
+	var req adminReplyReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	created, err := h.svc.AdminReply(req.PostID, req.ParentID, req.Content)
+	if err != nil {
+		if errors.Is(err, service.ErrPostNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, created)
+}

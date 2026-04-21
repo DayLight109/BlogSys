@@ -28,6 +28,7 @@ type postReq struct {
 	CoverURL *string  `json:"coverUrl"`
 	Status   string   `json:"status"`
 	Tags     []string `json:"tags"`
+	Pinned   *bool    `json:"pinned"`
 	Publish  bool     `json:"publish"`
 }
 
@@ -152,6 +153,7 @@ func reqToInput(req postReq) service.PostInput {
 		CoverURL: req.CoverURL,
 		Status:   req.Status,
 		Tags:     req.Tags,
+		Pinned:   req.Pinned,
 		Publish:  req.Publish,
 	}
 }

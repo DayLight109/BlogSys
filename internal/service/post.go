@@ -33,6 +33,7 @@ type PostInput struct {
 	CoverURL *string
 	Status   string
 	Tags     []string
+	Pinned   *bool
 	Publish  bool
 }
 
@@ -115,6 +116,9 @@ func (s *PostService) Create(authorID uint64, in PostInput) (*model.Post, error)
 		AuthorID:    authorID,
 		PublishedAt: publishedAt,
 	}
+	if in.Pinned != nil {
+		p.Pinned = *in.Pinned
+	}
 	if err := s.posts.Create(p); err != nil {
 		return nil, err
 	}
@@ -153,6 +157,9 @@ func (s *PostService) Update(id uint64, in PostInput) (*model.Post, error) {
 	p.ContentHTML = html
 	p.CoverURL = in.CoverURL
 	p.Tags = model.StringArray(in.Tags)
+	if in.Pinned != nil {
+		p.Pinned = *in.Pinned
+	}
 
 	wasPublished := p.Status == model.PostStatusPublished
 	if in.Status != "" {
@@ -271,6 +278,56 @@ func (s *PostService) ListTags() ([]TagCount, error) {
 		return out[i].Tag < out[j].Tag
 	})
 	return out, nil
+}
+
+// RenameTag replaces `from` with `to` in every post's tags array (deduped).
+func (s *PostService) RenameTag(from, to string) error {
+	from = strings.TrimSpace(from)
+	to = strings.TrimSpace(to)
+	if from == "" || to == "" {
+		return errors.New("tag name required")
+	}
+	return s.posts.RenameTag(from, to)
+}
+
+// MergeTags replaces any occurrence of tags in `from` with `to`.
+func (s *PostService) MergeTags(from []string, to string) error {
+	to = strings.TrimSpace(to)
+	if to == "" {
+		return errors.New("target tag required")
+	}
+	cleaned := make([]string, 0, len(from))
+	for _, f := range from {
+		f = strings.TrimSpace(f)
+		if f != "" && f != to {
+			cleaned = append(cleaned, f)
+		}
+	}
+	if len(cleaned) == 0 {
+		return errors.New("source tags required")
+	}
+	return s.posts.MergeTags(cleaned, to)
+}
+
+// DeleteTag removes `name` from every post's tags array.
+func (s *PostService) DeleteTag(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("tag name required")
+	}
+	return s.posts.DeleteTag(name)
+}
+
+// GetPublishedByID retrieves a published post used by admin reply to cache post existence.
+func (s *PostService) GetPublishedByID(id uint64) (*model.Post, error) {
+	p, err := s.posts.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil || p.Status != model.PostStatusPublished {
+		return nil, ErrPostNotFound
+	}
+	return p, nil
 }
 
 func normalizeSlug(slug, fallbackTitle string) string {

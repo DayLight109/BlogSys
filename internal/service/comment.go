@@ -12,10 +12,11 @@ var ErrCommentNotFound = errors.New("comment not found")
 type CommentService struct {
 	comments *repository.CommentRepository
 	posts    *repository.PostRepository
+	settings *SettingService
 }
 
-func NewCommentService(comments *repository.CommentRepository, posts *repository.PostRepository) *CommentService {
-	return &CommentService{comments: comments, posts: posts}
+func NewCommentService(comments *repository.CommentRepository, posts *repository.PostRepository, settings *SettingService) *CommentService {
+	return &CommentService{comments: comments, posts: posts, settings: settings}
 }
 
 type CommentInput struct {
@@ -100,4 +101,42 @@ func (s *CommentService) UpdateStatus(id uint64, status string) error {
 
 func (s *CommentService) Delete(id uint64) error {
 	return s.comments.Delete(id)
+}
+
+// AdminReply posts an auto-approved comment authored by the site owner.
+// postID must reference an existing post; parentID (optional) must belong to the same post.
+func (s *CommentService) AdminReply(postID uint64, parentID *uint64, content string) (*model.Comment, error) {
+	p, err := s.posts.FindByID(postID)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil {
+		return nil, ErrPostNotFound
+	}
+	if parentID != nil {
+		parent, err := s.comments.FindByID(*parentID)
+		if err != nil {
+			return nil, err
+		}
+		if parent == nil || parent.PostID != postID {
+			return nil, errors.New("invalid parent comment")
+		}
+	}
+	authorName := "Author"
+	if s.settings != nil {
+		if n, err := s.settings.BrandName(); err == nil && n != "" {
+			authorName = n
+		}
+	}
+	c := &model.Comment{
+		PostID:     postID,
+		ParentID:   parentID,
+		AuthorName: authorName,
+		Content:    content,
+		Status:     model.CommentStatusApproved,
+	}
+	if err := s.comments.Create(c); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
