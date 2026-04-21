@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log"
 	"net/http"
@@ -22,8 +24,18 @@ import (
 	"github.com/lilce/blog-api/internal/service"
 )
 
+const defaultJWTSecret = "change-me-in-production"
+
 func main() {
 	cfg := config.Load()
+
+	// Refuse to boot in prod with the template JWT secret.
+	if cfg.JWTSecret == defaultJWTSecret {
+		if cfg.AppEnv == "prod" {
+			log.Fatal("JWT_SECRET is the default value — refusing to start in prod. Set a random JWT_SECRET in env.")
+		}
+		log.Println("!!  JWT_SECRET is the default value; set JWT_SECRET in env for production.  !!")
+	}
 
 	db, err := database.OpenMySQL(cfg.MySQLDSN)
 	if err != nil {
@@ -50,13 +62,38 @@ func main() {
 	settingRepo := repository.NewSettingRepository(db)
 
 	tokenMgr := auth.NewTokenManager(cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
-	authSvc := service.NewAuthService(userRepo, tokenMgr)
+	authSvc := service.NewAuthService(userRepo, tokenMgr, rdb)
 	postSvc := service.NewPostService(postRepo)
 	settingSvc := service.NewSettingService(settingRepo)
 	commentSvc := service.NewCommentService(commentRepo, postRepo, settingSvc)
 
-	if err := authSvc.EnsureAdminSeed("admin", "admin123"); err != nil {
+	// Seed admin account on first boot. Prefer env-provided credentials; fall
+	// back to a generated random password that's printed once and never again.
+	adminUser := os.Getenv("ADMIN_USERNAME")
+	if adminUser == "" {
+		adminUser = "admin"
+	}
+	adminPass := os.Getenv("ADMIN_INITIAL_PASSWORD")
+	generated := false
+	if adminPass == "" {
+		b := make([]byte, 12)
+		if _, err := rand.Read(b); err != nil {
+			log.Fatalf("rand: %v", err)
+		}
+		adminPass = hex.EncodeToString(b)
+		generated = true
+	}
+	created, err := authSvc.EnsureAdminSeedIfEmpty(adminUser, adminPass)
+	if err != nil {
 		log.Fatalf("seed admin: %v", err)
+	}
+	if created && generated {
+		log.Printf("======================================================")
+		log.Printf(" Seeded admin account. Save these NOW — shown once:")
+		log.Printf("   username: %s", adminUser)
+		log.Printf("   password: %s", adminPass)
+		log.Printf(" Change it immediately via /admin/settings or API.")
+		log.Printf("======================================================")
 	}
 	if err := settingSvc.EnsureDefaults(); err != nil {
 		log.Fatalf("seed settings: %v", err)
@@ -72,10 +109,26 @@ func main() {
 	// contains non-ASCII characters 404 because the DB stores the raw form.
 	r.UseRawPath = true
 	r.UnescapePathValues = true
-	r.Use(gin.Logger(), gin.Recovery(), middleware.CORS(cfg.CORSOrigin))
+	// Cap multipart memory to 10 MB; larger uploads spill to disk. Per-request
+	// body cap prevents a slow-POST / huge-JSON denial-of-service.
+	r.MaxMultipartMemory = 10 << 20
+	r.Use(
+		middleware.BodyLimit(10<<20), // 10 MB default — upload handler does its own stricter 5 MB check
+		gin.Logger(),
+		gin.Recovery(),
+		middleware.SecurityHeaders(cfg.AppEnv == "prod"),
+		middleware.CORS(cfg.CORSOrigin),
+	)
+
+	// 5 failed-ish attempts per minute per IP on login. Tight but still lets a
+	// legit user fat-finger a few times.
+	loginLimiter := middleware.NewLimiter(5, time.Minute)
+
+	// Secure refresh cookie when running behind HTTPS in prod.
+	secureCookies := cfg.AppEnv == "prod"
 
 	healthH := handler.NewHealthHandler()
-	authH := handler.NewAuthHandler(authSvc)
+	authH := handler.NewAuthHandler(authSvc, secureCookies)
 	postH := handler.NewPostHandler(postSvc)
 	commentH := handler.NewCommentHandler(commentSvc, postSvc)
 	tagH := handler.NewTagHandler(postSvc)
@@ -88,10 +141,11 @@ func main() {
 
 		authG := api.Group("/auth")
 		{
-			authG.POST("/login", authH.Login)
+			authG.POST("/login", middleware.RateLimit(loginLimiter), authH.Login)
 			authG.POST("/refresh", authH.Refresh)
 			authG.POST("/logout", authH.Logout)
 			authG.GET("/me", middleware.JWTAuth(tokenMgr), authH.Me)
+			authG.POST("/password", middleware.JWTAuth(tokenMgr), authH.ChangePassword)
 		}
 
 		posts := api.Group("/posts")
@@ -145,12 +199,13 @@ func main() {
 	r.Static("/uploads", cfg.UploadDir)
 
 	srv := &http.Server{
-		Addr:    ":" + cfg.HTTPPort,
-		Handler: r,
+		Addr:              ":" + cfg.HTTPPort,
+		Handler:           r,
+		ReadHeaderTimeout: 15 * time.Second,
 	}
 
 	go func() {
-		log.Printf("listening on :%s", cfg.HTTPPort)
+		log.Printf("listening on :%s (env=%s, secure-cookies=%t)", cfg.HTTPPort, cfg.AppEnv, secureCookies)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("listen: %v", err)
 		}

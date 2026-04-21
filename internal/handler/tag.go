@@ -30,7 +30,7 @@ type tagRenameReq struct {
 }
 
 func (h *TagHandler) Rename(c *gin.Context) {
-	from := c.Param("name")
+	from := decodeParam(c.Param("name"))
 	var req tagRenameReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -62,7 +62,7 @@ func (h *TagHandler) Merge(c *gin.Context) {
 }
 
 func (h *TagHandler) Delete(c *gin.Context) {
-	name := c.Param("name")
+	name := decodeParam(c.Param("name"))
 	if err := h.svc.DeleteTag(name); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

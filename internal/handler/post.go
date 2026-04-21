@@ -50,7 +50,7 @@ func (h *PostHandler) ListPublic(c *gin.Context) {
 }
 
 func (h *PostHandler) GetBySlug(c *gin.Context) {
-	slug := c.Param("slug")
+	slug := decodeParam(c.Param("slug"))
 	p, err := h.svc.GetPublishedBySlug(slug)
 	if err != nil {
 		if errors.Is(err, service.ErrPostNotFound) {
@@ -160,7 +160,7 @@ func reqToInput(req postReq) service.PostInput {
 
 // GetNeighbors returns { prev, next } for the given slug.
 func (h *PostHandler) GetNeighbors(c *gin.Context) {
-	slug := c.Param("slug")
+	slug := decodeParam(c.Param("slug"))
 	prev, next, err := h.svc.GetNeighbors(slug)
 	if err != nil {
 		if errors.Is(err, service.ErrPostNotFound) {
@@ -177,7 +177,7 @@ func (h *PostHandler) GetNeighbors(c *gin.Context) {
 
 // GetRelated returns up to `limit` posts sharing tags with the given slug.
 func (h *PostHandler) GetRelated(c *gin.Context) {
-	slug := c.Param("slug")
+	slug := decodeParam(c.Param("slug"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "3"))
 	if limit <= 0 || limit > 12 {
 		limit = 3

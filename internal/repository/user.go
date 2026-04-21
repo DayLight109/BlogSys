@@ -42,6 +42,10 @@ func (r *UserRepository) Create(u *model.User) error {
 	return r.db.Create(u).Error
 }
 
+func (r *UserRepository) Update(u *model.User) error {
+	return r.db.Save(u).Error
+}
+
 func (r *UserRepository) Count() (int64, error) {
 	var n int64
 	err := r.db.Model(&model.User{}).Count(&n).Error

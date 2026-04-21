@@ -7,6 +7,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// ???  i dont know why, i dont wanna know why,but i just write it
 type Claims struct {
 	UserID   uint64 `json:"uid"`
 	Username string `json:"usr"`

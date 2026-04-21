@@ -32,6 +32,8 @@ const (
 	KeyAboutBodyMd       = "about.body_md"
 	KeySeoSiteTitle      = "seo.site_title"
 	KeySeoSiteDescription = "seo.site_description"
+	KeyThemeAccent        = "theme.accent"
+	KeyThemeAccentDark    = "theme.accent_dark"
 )
 
 var knownKeys = map[string]struct{}{
@@ -44,6 +46,8 @@ var knownKeys = map[string]struct{}{
 	KeyAboutBodyMd:        {},
 	KeySeoSiteTitle:       {},
 	KeySeoSiteDescription: {},
+	KeyThemeAccent:        {},
+	KeyThemeAccentDark:    {},
 }
 
 // Public is the shape served to anonymous readers on /api/settings.
@@ -53,6 +57,7 @@ type Public struct {
 	Contact Contact `json:"contact"`
 	SEO     SEO     `json:"seo"`
 	About   About   `json:"about"`
+	Theme   Theme   `json:"theme"`
 }
 
 type Admin struct {
@@ -84,6 +89,11 @@ type About struct {
 	BodyHTML  string `json:"bodyHtml"`
 }
 
+type Theme struct {
+	Accent     string `json:"accent"`
+	AccentDark string `json:"accentDark"`
+}
+
 // EnsureDefaults seeds keys that don't yet exist so a fresh DB boots with sensible copy.
 func (s *SettingService) EnsureDefaults() error {
 	defaults := map[string]string{
@@ -96,6 +106,8 @@ func (s *SettingService) EnsureDefaults() error {
 		KeyAboutBodyMd:        defaultAboutMd,
 		KeySeoSiteTitle:       "Kiri · Notes",
 		KeySeoSiteDescription: "A personal journal on software, systems, and the craft of writing.",
+		KeyThemeAccent:        "#9a2e20",
+		KeyThemeAccentDark:    "#d8715e",
 	}
 	for k, v := range defaults {
 		encoded, err := json.Marshal(v)
@@ -170,6 +182,10 @@ func (s *SettingService) buildPublic(vals map[string]string) *Public {
 		About: About{
 			HeroTitle: vals[KeyAboutHeroTitle],
 			BodyHTML:  html,
+		},
+		Theme: Theme{
+			Accent:     vals[KeyThemeAccent],
+			AccentDark: vals[KeyThemeAccentDark],
 		},
 	}
 }

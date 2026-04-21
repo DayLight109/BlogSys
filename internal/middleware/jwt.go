@@ -15,6 +15,8 @@ const (
 	CtxRole     = "ctx_role"
 )
 
+// JWTAuth I don't know, I don't wanna know, I just write it down
+// please don't let me write JWT bundle again xD
 func JWTAuth(tm *auth.TokenManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")

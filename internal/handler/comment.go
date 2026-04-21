@@ -28,7 +28,7 @@ type commentReq struct {
 }
 
 func (h *CommentHandler) SubmitForSlug(c *gin.Context) {
-	slug := c.Param("slug")
+	slug := decodeParam(c.Param("slug"))
 	p, err := h.postSvc.GetPublishedBySlug(slug)
 	if err != nil {
 		if errors.Is(err, service.ErrPostNotFound) {
@@ -66,7 +66,7 @@ func (h *CommentHandler) SubmitForSlug(c *gin.Context) {
 }
 
 func (h *CommentHandler) ListForSlug(c *gin.Context) {
-	slug := c.Param("slug")
+	slug := decodeParam(c.Param("slug"))
 	p, err := h.postSvc.GetPublishedBySlug(slug)
 	if err != nil {
 		if errors.Is(err, service.ErrPostNotFound) {

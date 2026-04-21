@@ -16,7 +16,9 @@ import (
 
 const maxUploadBytes = 5 * 1024 * 1024 // 5 MB
 
-var allowedMIME = map[string]string{
+// extByDetected maps the actual sniffed MIME to an extension; the request's
+// Content-Type and the filename are treated as hints only.
+var extByDetected = map[string]string{
 	"image/png":  ".png",
 	"image/jpeg": ".jpg",
 	"image/webp": ".webp",
@@ -47,23 +49,6 @@ func (h *UploadHandler) Create(c *gin.Context) {
 		return
 	}
 
-	mimetype := fh.Header.Get("Content-Type")
-	ext, ok := allowedMIME[mimetype]
-	if !ok {
-		// Fall back to extension if browser didn't set a clean MIME.
-		extFromName := strings.ToLower(filepath.Ext(fh.Filename))
-		switch extFromName {
-		case ".png", ".jpg", ".jpeg", ".webp", ".gif":
-			ext = extFromName
-			if ext == ".jpeg" {
-				ext = ".jpg"
-			}
-		default:
-			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported image type"})
-			return
-		}
-	}
-
 	src, err := fh.Open()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -77,6 +62,24 @@ func (h *UploadHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Sniff the real content type from the bytes — do NOT trust the
+	// Content-Type header or filename extension. An attacker could send a
+	// JS/HTML blob with `Content-Type: image/png` and `foo.png` filename;
+	// http.DetectContentType looks at magic bytes.
+	sniff := buf
+	if len(sniff) > 512 {
+		sniff = sniff[:512]
+	}
+	detected := strings.SplitN(http.DetectContentType(sniff), ";", 2)[0]
+	ext, ok := extByDetected[detected]
+	if !ok {
+		c.JSON(http.StatusUnsupportedMediaType, gin.H{
+			"error": "unsupported image type",
+		})
+		return
+	}
+
 	hash := hex.EncodeToString(hasher.Sum(nil))[:12]
 
 	now := time.Now().UTC()
@@ -96,6 +99,23 @@ func (h *UploadHandler) Create(c *gin.Context) {
 	}
 	finalName := hash + "-" + name
 	finalPath := filepath.Join(destDir, finalName)
+
+	// Defence in depth: verify the path we're about to write is still inside
+	// the upload root, preventing any sanitizeFilename bypass.
+	absRoot, err := filepath.Abs(h.dir)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	absFinal, err := filepath.Abs(finalPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !strings.HasPrefix(absFinal, absRoot+string(os.PathSeparator)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid path"})
+		return
+	}
 
 	if err := os.WriteFile(finalPath, buf, 0o644); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
