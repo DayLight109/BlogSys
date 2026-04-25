@@ -3,6 +3,10 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/mail"
+	"net/url"
+	"regexp"
 
 	"github.com/lilce/blog-api/internal/markdown"
 	"github.com/lilce/blog-api/internal/repository"
@@ -49,6 +53,8 @@ var knownKeys = map[string]struct{}{
 	KeyThemeAccent:        {},
 	KeyThemeAccentDark:    {},
 }
+
+var hexColorRe = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$`)
 
 // Public is the shape served to anonymous readers on /api/settings.
 type Public struct {
@@ -205,9 +211,12 @@ func (s *SettingService) GetAdmin() (*Admin, error) {
 // Update accepts { key: stringValue } map and upserts each.
 // Unknown keys are rejected to prevent accidental garbage.
 func (s *SettingService) Update(updates map[string]string) error {
-	for k := range updates {
+	for k, v := range updates {
 		if _, ok := knownKeys[k]; !ok {
 			return ErrInvalidSettingKey
+		}
+		if err := validateSettingValue(k, v); err != nil {
+			return err
 		}
 	}
 	for k, v := range updates {
@@ -217,6 +226,45 @@ func (s *SettingService) Update(updates map[string]string) error {
 		}
 		if err := s.repo.Upsert(k, string(encoded)); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateSettingValue(key, value string) error {
+	limits := map[string]int{
+		KeyBrandName:          64,
+		KeyBrandTagline:       128,
+		KeyFooterText:         200,
+		KeyContactEmail:       128,
+		KeyContactGithub:      200,
+		KeyAboutHeroTitle:     128,
+		KeyAboutBodyMd:        20000,
+		KeySeoSiteTitle:       128,
+		KeySeoSiteDescription: 320,
+		KeyThemeAccent:        24,
+		KeyThemeAccentDark:    24,
+	}
+	if max, ok := limits[key]; ok && len(value) > max {
+		return fmt.Errorf("%s is too long", key)
+	}
+	switch key {
+	case KeyContactEmail:
+		if value != "" {
+			if _, err := mail.ParseAddress(value); err != nil {
+				return fmt.Errorf("%s must be a valid email address", key)
+			}
+		}
+	case KeyContactGithub:
+		if value != "" {
+			u, err := url.ParseRequestURI(value)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return fmt.Errorf("%s must be a valid http(s) URL", key)
+			}
+		}
+	case KeyThemeAccent, KeyThemeAccentDark:
+		if !hexColorRe.MatchString(value) {
+			return fmt.Errorf("%s must be a hex color", key)
 		}
 	}
 	return nil

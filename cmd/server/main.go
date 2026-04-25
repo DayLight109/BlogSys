@@ -28,16 +28,30 @@ const defaultJWTSecret = "change-me-in-production"
 
 func main() {
 	cfg := config.Load()
-
-	// Refuse to boot in prod with the template JWT secret.
-	if cfg.JWTSecret == defaultJWTSecret {
-		if cfg.AppEnv == "prod" {
-			log.Fatal("JWT_SECRET is the default value — refusing to start in prod. Set a random JWT_SECRET in env.")
-		}
-		log.Println("!!  JWT_SECRET is the default value; set JWT_SECRET in env for production.  !!")
+	switch cfg.AppEnv {
+	case "dev", "test", "prod":
+	default:
+		log.Fatalf("invalid APP_ENV %q; use dev, test, or prod/production", cfg.AppEnv)
 	}
 
-	db, err := database.OpenMySQL(cfg.MySQLDSN)
+	// Refuse weak production secrets. In dev/test, replace the template with an
+	// ephemeral random secret so the server never signs tokens with a known key.
+	if cfg.JWTSecret == defaultJWTSecret {
+		if cfg.IsProd() {
+			log.Fatal("JWT_SECRET is the default value — refusing to start in prod. Set a random JWT_SECRET in env.")
+		}
+		secret, err := randomHex(32)
+		if err != nil {
+			log.Fatalf("jwt secret generation: %v", err)
+		}
+		cfg.JWTSecret = secret
+		log.Println("JWT_SECRET was not set; generated an ephemeral dev/test secret for this process.")
+	}
+	if cfg.IsProd() && len([]byte(cfg.JWTSecret)) < 32 {
+		log.Fatal("JWT_SECRET must be at least 32 bytes in prod.")
+	}
+
+	db, err := database.OpenMySQL(cfg.MySQLDSN, !cfg.IsProd())
 	if err != nil {
 		log.Fatalf("mysql: %v", err)
 	}
@@ -75,12 +89,18 @@ func main() {
 	}
 	adminPass := os.Getenv("ADMIN_INITIAL_PASSWORD")
 	generated := false
-	if adminPass == "" {
-		b := make([]byte, 12)
-		if _, err := rand.Read(b); err != nil {
-			log.Fatalf("rand: %v", err)
+	userCount, err := userRepo.Count()
+	if err != nil {
+		log.Fatalf("count users: %v", err)
+	}
+	if adminPass == "" && userCount == 0 {
+		if cfg.IsProd() {
+			log.Fatal("ADMIN_INITIAL_PASSWORD must be set on first prod boot.")
 		}
-		adminPass = hex.EncodeToString(b)
+		adminPass, err = randomHex(12)
+		if err != nil {
+			log.Fatalf("admin password generation: %v", err)
+		}
 		generated = true
 	}
 	created, err := authSvc.EnsureAdminSeedIfEmpty(adminUser, adminPass)
@@ -99,7 +119,7 @@ func main() {
 		log.Fatalf("seed settings: %v", err)
 	}
 
-	if cfg.AppEnv == "prod" {
+	if cfg.IsProd() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
@@ -116,16 +136,17 @@ func main() {
 		middleware.BodyLimit(10<<20), // 10 MB default — upload handler does its own stricter 5 MB check
 		gin.Logger(),
 		gin.Recovery(),
-		middleware.SecurityHeaders(cfg.AppEnv == "prod"),
+		middleware.SecurityHeaders(cfg.IsProd()),
 		middleware.CORS(cfg.CORSOrigin),
 	)
 
 	// 5 failed-ish attempts per minute per IP on login. Tight but still lets a
 	// legit user fat-finger a few times.
 	loginLimiter := middleware.NewLimiter(5, time.Minute)
+	commentLimiter := middleware.NewLimiter(10, time.Minute)
 
 	// Secure refresh cookie when running behind HTTPS in prod.
-	secureCookies := cfg.AppEnv == "prod"
+	secureCookies := cfg.IsProd()
 
 	healthH := handler.NewHealthHandler()
 	authH := handler.NewAuthHandler(authSvc, secureCookies)
@@ -155,7 +176,7 @@ func main() {
 			posts.GET("/:slug/neighbors", postH.GetNeighbors)
 			posts.GET("/:slug/related", postH.GetRelated)
 			posts.GET("/:slug/comments", commentH.ListForSlug)
-			posts.POST("/:slug/comments", commentH.SubmitForSlug)
+			posts.POST("/:slug/comments", middleware.RateLimit(commentLimiter), commentH.SubmitForSlug)
 		}
 
 		api.GET("/archive", postH.Archive)
@@ -222,4 +243,12 @@ func main() {
 		log.Fatalf("shutdown: %v", err)
 	}
 	log.Println("stopped")
+}
+
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

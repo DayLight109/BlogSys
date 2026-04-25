@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -35,7 +37,16 @@ func NewTokenManager(secret string, accessTTL, refreshTTL time.Duration) *TokenM
 	}
 }
 
+func (tm *TokenManager) RefreshTTL() time.Duration {
+	return tm.refreshTokenTTL
+}
+
 func (tm *TokenManager) Issue(userID uint64, username, role, tokenType string) (string, time.Time, error) {
+	t, exp, _, err := tm.IssueWithID(userID, username, role, tokenType)
+	return t, exp, err
+}
+
+func (tm *TokenManager) IssueWithID(userID uint64, username, role, tokenType string) (string, time.Time, string, error) {
 	var ttl time.Duration
 	switch tokenType {
 	case TypeAccess:
@@ -43,7 +54,12 @@ func (tm *TokenManager) Issue(userID uint64, username, role, tokenType string) (
 	case TypeRefresh:
 		ttl = tm.refreshTokenTTL
 	default:
-		return "", time.Time{}, errors.New("unknown token type")
+		return "", time.Time{}, "", errors.New("unknown token type")
+	}
+
+	jti, err := randomTokenID()
+	if err != nil {
+		return "", time.Time{}, "", err
 	}
 
 	exp := time.Now().Add(ttl)
@@ -57,10 +73,11 @@ func (tm *TokenManager) Issue(userID uint64, username, role, tokenType string) (
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Issuer:    "blog-api",
 			Subject:   username,
+			ID:        jti,
 		},
 	}
 	t, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(tm.secret)
-	return t, exp, err
+	return t, exp, jti, err
 }
 
 func (tm *TokenManager) Parse(tokenStr string) (*Claims, error) {
@@ -78,4 +95,12 @@ func (tm *TokenManager) Parse(tokenStr string) (*Claims, error) {
 		return nil, errors.New("invalid token")
 	}
 	return claims, nil
+}
+
+func randomTokenID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

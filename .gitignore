@@ -1,0 +1,15 @@
+.env
+.env.local
+.env.*.local
+
+uploads/
+tmp/
+
+server
+server.exe
+__debug_bin*
+
+*.log
+*.out
+.idea/
+vendor/

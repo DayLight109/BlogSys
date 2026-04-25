@@ -44,7 +44,11 @@ func (r *PostRepository) List(q PostListQuery) ([]model.Post, int64, error) {
 		tx = tx.Where("status = ?", q.Status)
 	}
 	if q.Tag != "" {
-		tx = tx.Where("JSON_CONTAINS(tags, ?)", `"`+q.Tag+`"`)
+		tagJSON, err := json.Marshal(q.Tag)
+		if err != nil {
+			return nil, 0, err
+		}
+		tx = tx.Where("JSON_CONTAINS(tags, ?)", string(tagJSON))
 	}
 
 	var total int64

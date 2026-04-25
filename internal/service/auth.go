@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -48,6 +49,13 @@ type TokenPair struct {
 
 func failKey(username string) string   { return fmt.Sprintf("auth:fail:%s", username) }
 func lockKey(username string) string   { return fmt.Sprintf("auth:lock:%s", username) }
+func refreshKey(jti string) string     { return fmt.Sprintf("auth:refresh:%s", jti) }
+func refreshUserKey(userID uint64) string {
+	return fmt.Sprintf("auth:user_refresh:%d", userID)
+}
+func refreshInvalidBeforeKey(userID uint64) string {
+	return fmt.Sprintf("auth:refresh_invalid_before:%d", userID)
+}
 
 // isLocked returns true when the username has an active lockout record.
 func (s *AuthService) isLocked(ctx context.Context, username string) bool {
@@ -118,6 +126,7 @@ func (s *AuthService) ChangePassword(userID uint64, current, next string) error 
 	if len(next) < 8 {
 		return ErrWeakPassword
 	}
+	ctx := context.Background()
 	u, err := s.users.FindByID(userID)
 	if err != nil {
 		return err
@@ -133,16 +142,29 @@ func (s *AuthService) ChangePassword(userID uint64, current, next string) error 
 		return err
 	}
 	u.PasswordHash = hash
-	return s.users.Update(u)
+	if err := s.users.Update(u); err != nil {
+		return err
+	}
+	return s.invalidateUserRefresh(ctx, userID)
 }
 
 func (s *AuthService) Refresh(refreshToken string) (*TokenPair, error) {
+	ctx := context.Background()
 	claims, err := s.tm.Parse(refreshToken)
 	if err != nil {
 		return nil, err
 	}
 	if claims.Type != auth.TypeRefresh {
 		return nil, errors.New("not a refresh token")
+	}
+	if claims.ID == "" {
+		return nil, errors.New("refresh token missing id")
+	}
+	if err := s.ensureRefreshStillValid(ctx, claims); err != nil {
+		return nil, err
+	}
+	if err := s.consumeRefresh(ctx, claims); err != nil {
+		return nil, err
 	}
 	u, err := s.users.FindByID(claims.UserID)
 	if err != nil {
@@ -152,6 +174,14 @@ func (s *AuthService) Refresh(refreshToken string) (*TokenPair, error) {
 		return nil, errors.New("user not found")
 	}
 	return s.issuePair(u)
+}
+
+func (s *AuthService) Logout(refreshToken string) {
+	claims, err := s.tm.Parse(refreshToken)
+	if err != nil || claims.Type != auth.TypeRefresh || claims.ID == "" {
+		return
+	}
+	_ = s.revokeRefresh(context.Background(), claims.UserID, claims.ID)
 }
 
 // EnsureAdminSeedIfEmpty creates the initial admin user only when the users
@@ -189,8 +219,11 @@ func (s *AuthService) issuePair(u *model.User) (*TokenPair, error) {
 	if err != nil {
 		return nil, err
 	}
-	rt, rExp, err := s.tm.Issue(u.ID, u.Username, u.Role, auth.TypeRefresh)
+	rt, rExp, rJTI, err := s.tm.IssueWithID(u.ID, u.Username, u.Role, auth.TypeRefresh)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.rememberRefresh(context.Background(), u.ID, rJTI, rExp); err != nil {
 		return nil, err
 	}
 	return &TokenPair{
@@ -200,4 +233,89 @@ func (s *AuthService) issuePair(u *model.User) (*TokenPair, error) {
 		RefreshExpiresAt: rExp,
 		User:             u,
 	}, nil
+}
+
+func (s *AuthService) rememberRefresh(ctx context.Context, userID uint64, jti string, expiresAt time.Time) error {
+	if s.rdb == nil {
+		return nil
+	}
+	ttl := time.Until(expiresAt)
+	if ttl <= 0 {
+		return errors.New("refresh token already expired")
+	}
+	userKey := refreshUserKey(userID)
+	pipe := s.rdb.TxPipeline()
+	pipe.Set(ctx, refreshKey(jti), strconv.FormatUint(userID, 10), ttl)
+	pipe.SAdd(ctx, userKey, jti)
+	pipe.Expire(ctx, userKey, ttl)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (s *AuthService) ensureRefreshStillValid(ctx context.Context, claims *auth.Claims) error {
+	if s.rdb == nil {
+		return nil
+	}
+	if claims.IssuedAt == nil {
+		return errors.New("refresh token missing issued-at")
+	}
+	cutoff, err := s.rdb.Get(ctx, refreshInvalidBeforeKey(claims.UserID)).Int64()
+	if errors.Is(err, redis.Nil) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if claims.IssuedAt.Time.Unix() < cutoff {
+		return errors.New("refresh token revoked")
+	}
+	return nil
+}
+
+func (s *AuthService) consumeRefresh(ctx context.Context, claims *auth.Claims) error {
+	if s.rdb == nil {
+		return nil
+	}
+	rawUserID, err := s.rdb.GetDel(ctx, refreshKey(claims.ID)).Result()
+	if errors.Is(err, redis.Nil) {
+		return errors.New("refresh token revoked")
+	}
+	if err != nil {
+		return err
+	}
+	if rawUserID != strconv.FormatUint(claims.UserID, 10) {
+		return errors.New("refresh token user mismatch")
+	}
+	_ = s.rdb.SRem(ctx, refreshUserKey(claims.UserID), claims.ID).Err()
+	return nil
+}
+
+func (s *AuthService) revokeRefresh(ctx context.Context, userID uint64, jti string) error {
+	if s.rdb == nil {
+		return nil
+	}
+	pipe := s.rdb.TxPipeline()
+	pipe.Del(ctx, refreshKey(jti))
+	pipe.SRem(ctx, refreshUserKey(userID), jti)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (s *AuthService) invalidateUserRefresh(ctx context.Context, userID uint64) error {
+	if s.rdb == nil {
+		return nil
+	}
+	userKey := refreshUserKey(userID)
+	jtis, err := s.rdb.SMembers(ctx, userKey).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return err
+	}
+	pipe := s.rdb.TxPipeline()
+	pipe.Set(ctx, refreshInvalidBeforeKey(userID), time.Now().Unix(), s.tm.RefreshTTL())
+	for _, jti := range jtis {
+		pipe.Del(ctx, refreshKey(jti))
+	}
+	pipe.Del(ctx, userKey)
+	_, err = pipe.Exec(ctx)
+	return err
 }

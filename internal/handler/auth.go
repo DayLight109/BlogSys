@@ -89,6 +89,9 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 }
 
 func (h *AuthHandler) Logout(c *gin.Context) {
+	if rt, err := c.Cookie("refresh_token"); err == nil && rt != "" {
+		h.svc.Logout(rt)
+	}
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("refresh_token", "", -1, "/", "", h.secure, true)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -130,4 +133,3 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	c.SetCookie("refresh_token", "", -1, "/", "", h.secure, true)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
-

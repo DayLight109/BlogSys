@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -33,8 +34,10 @@ func Load() *Config {
 		log.Println("no .env file found, reading environment")
 	}
 
+	appEnv := normalizeAppEnv(getEnv("APP_ENV", "dev"))
+
 	return &Config{
-		AppEnv:     getEnv("APP_ENV", "dev"),
+		AppEnv:     appEnv,
 		HTTPPort:   getEnv("HTTP_PORT", "8080"),
 		CORSOrigin: getEnv("CORS_ORIGIN", "http://localhost:3000,http://localhost:5173"),
 
@@ -50,6 +53,23 @@ func Load() *Config {
 
 		UploadDir:    getEnv("UPLOAD_DIR", "./uploads"),
 		UploadPubURL: getEnv("UPLOAD_PUB_URL", "http://localhost:8080/uploads"),
+	}
+}
+
+func (c *Config) IsProd() bool {
+	return c.AppEnv == "prod"
+}
+
+func normalizeAppEnv(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "dev", "development", "local":
+		return "dev"
+	case "test", "testing":
+		return "test"
+	case "prod", "production":
+		return "prod"
+	default:
+		return strings.ToLower(strings.TrimSpace(v))
 	}
 }
 
