@@ -103,6 +103,18 @@ func (s *CommentService) Delete(id uint64) error {
 	return s.comments.Delete(id)
 }
 
+func (s *CommentService) ListTrash(page, size int) ([]model.Comment, int64, error) {
+	return s.comments.ListTrash(page, size)
+}
+
+func (s *CommentService) Restore(id uint64) error {
+	return s.comments.Restore(id)
+}
+
+func (s *CommentService) Purge(id uint64) error {
+	return s.comments.Purge(id)
+}
+
 // AdminReply posts an auto-approved comment authored by the site owner.
 // postID must reference an existing post; parentID (optional) must belong to the same post.
 func (s *CommentService) AdminReply(postID uint64, parentID *uint64, content string) (*model.Comment, error) {

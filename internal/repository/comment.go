@@ -79,3 +79,31 @@ func (r *CommentRepository) UpdateStatus(id uint64, status string) error {
 func (r *CommentRepository) Delete(id uint64) error {
 	return r.db.Delete(&model.Comment{}, id).Error
 }
+
+// ListTrash 列出软删评论。
+func (r *CommentRepository) ListTrash(page, size int) ([]model.Comment, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 100 {
+		size = 20
+	}
+	tx := r.db.Unscoped().Model(&model.Comment{}).Where("deleted_at IS NOT NULL")
+	var total int64
+	if err := tx.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var items []model.Comment
+	err := tx.Order("deleted_at DESC, id DESC").
+		Limit(size).Offset((page - 1) * size).Find(&items).Error
+	return items, total, err
+}
+
+func (r *CommentRepository) Restore(id uint64) error {
+	return r.db.Unscoped().Model(&model.Comment{}).
+		Where("id = ?", id).Update("deleted_at", nil).Error
+}
+
+func (r *CommentRepository) Purge(id uint64) error {
+	return r.db.Unscoped().Delete(&model.Comment{}, id).Error
+}

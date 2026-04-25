@@ -1,11 +1,15 @@
 package service
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/lilce/blog-api/internal/markdown"
 	"github.com/lilce/blog-api/internal/model"
@@ -19,22 +23,48 @@ var (
 
 type PostService struct {
 	posts *repository.PostRepository
+	rdb   *redis.Client
 }
 
-func NewPostService(posts *repository.PostRepository) *PostService {
-	return &PostService{posts: posts}
+func NewPostService(posts *repository.PostRepository, rdb *redis.Client) *PostService {
+	return &PostService{posts: posts, rdb: rdb}
+}
+
+// viewWindow 控制同一 viewer 在多长时间内对同一篇文章的浏览只计一次。
+const viewWindow = time.Hour
+
+// incrementViewIfFresh 用 Redis SETNX 判断 (postID, viewerKey) 是否在窗口内
+// 已经计过数。viewerKey 为空时跳过(用于 SubmitComment 这类只校验存在性的场景)。
+// Redis 不可用时降级为简单计数,避免阻塞业务。
+func (s *PostService) incrementViewIfFresh(viewerKey string, postID uint64) {
+	if viewerKey == "" {
+		return
+	}
+	if s.rdb == nil {
+		_ = s.posts.IncrementView(postID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	key := fmt.Sprintf("postview:%d:%s", postID, viewerKey)
+	ok, err := s.rdb.SetNX(ctx, key, "1", viewWindow).Result()
+	if err != nil || !ok {
+		return
+	}
+	_ = s.posts.IncrementView(postID)
 }
 
 type PostInput struct {
-	Title    string
-	Slug     string
-	Summary  *string
-	Content  string
-	CoverURL *string
-	Status   string
-	Tags     []string
-	Pinned   *bool
-	Publish  bool
+	Title     string
+	Slug      string
+	Summary   *string
+	Content   string
+	CoverURL  *string
+	Status    string
+	Tags      []string
+	Pinned    *bool
+	Publish   bool
+	PublishAt *time.Time
 }
 
 func (s *PostService) ListPublic(tag string, page, size int) ([]model.Post, int64, error) {
@@ -55,7 +85,7 @@ func (s *PostService) ListAdmin(status, tag string, page, size int) ([]model.Pos
 	})
 }
 
-func (s *PostService) GetPublishedBySlug(slug string) (*model.Post, error) {
+func (s *PostService) GetPublishedBySlug(slug, viewerKey string) (*model.Post, error) {
 	p, err := s.posts.FindBySlug(slug)
 	if err != nil {
 		return nil, err
@@ -63,7 +93,7 @@ func (s *PostService) GetPublishedBySlug(slug string) (*model.Post, error) {
 	if p == nil || p.Status != model.PostStatusPublished {
 		return nil, ErrPostNotFound
 	}
-	_ = s.posts.IncrementView(p.ID)
+	s.incrementViewIfFresh(viewerKey, p.ID)
 	return p, nil
 }
 
@@ -97,9 +127,16 @@ func (s *PostService) Create(authorID uint64, in PostInput) (*model.Post, error)
 	if status == "" {
 		status = model.PostStatusDraft
 	}
+	now := time.Now()
 	var publishedAt *time.Time
-	if in.Publish || status == model.PostStatusPublished {
-		now := time.Now()
+	switch {
+	case in.PublishAt != nil && in.PublishAt.After(now):
+		// 预约发布:状态置为 scheduled,published_at 写到目标时刻,
+		// 后台 publisher goroutine 到点把 status 翻成 published。
+		t := *in.PublishAt
+		publishedAt = &t
+		status = model.PostStatusScheduled
+	case in.Publish || status == model.PostStatusPublished:
 		publishedAt = &now
 		status = model.PostStatusPublished
 	}
@@ -165,8 +202,14 @@ func (s *PostService) Update(id uint64, in PostInput) (*model.Post, error) {
 	if in.Status != "" {
 		p.Status = in.Status
 	}
-	if in.Publish && !wasPublished {
-		now := time.Now()
+	now := time.Now()
+	switch {
+	case in.PublishAt != nil && in.PublishAt.After(now):
+		// 改成"未来某时发布":覆盖 published_at,翻 status 成 scheduled。
+		t := *in.PublishAt
+		p.PublishedAt = &t
+		p.Status = model.PostStatusScheduled
+	case in.Publish && !wasPublished:
 		p.PublishedAt = &now
 		p.Status = model.PostStatusPublished
 	}
@@ -179,6 +222,19 @@ func (s *PostService) Update(id uint64, in PostInput) (*model.Post, error) {
 
 func (s *PostService) Delete(id uint64) error {
 	return s.posts.Delete(id)
+}
+
+// ListTrash / Restore / Purge — 回收站三件套。
+func (s *PostService) ListTrash(page, size int) ([]model.Post, int64, error) {
+	return s.posts.ListTrash(page, size)
+}
+
+func (s *PostService) Restore(id uint64) error {
+	return s.posts.Restore(id)
+}
+
+func (s *PostService) Purge(id uint64) error {
+	return s.posts.Purge(id)
 }
 
 // GetNeighbors returns prev/next published posts around the given slug.

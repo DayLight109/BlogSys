@@ -4,11 +4,16 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/lilce/blog-api/internal/service"
 )
+
+// minSubmitInterval 是评论表单从渲染到提交的最短时间;低于这个值多半是 bot
+// 直接以编程方式 POST,而不是真人填写。
+const minSubmitInterval = 3 * time.Second
 
 type CommentHandler struct {
 	svc     *service.CommentService
@@ -25,11 +30,15 @@ type commentReq struct {
 	AuthorEmail   *string `json:"authorEmail" binding:"omitempty,email,max=100"`
 	AuthorWebsite *string `json:"authorWebsite" binding:"omitempty,url,max=200"`
 	Content       string  `json:"content" binding:"required,min=1,max=5000"`
+	// Honeypot:对真人是隐藏字段,bot 自动填表常会写值。必须为空。
+	Url *string `json:"url"`
+	// Ts:前端表单挂载时的 epoch ms;提交距离挂载小于 minSubmitInterval 视为 bot。
+	Ts int64 `json:"ts"`
 }
 
 func (h *CommentHandler) SubmitForSlug(c *gin.Context) {
 	slug := decodeParam(c.Param("slug"))
-	p, err := h.postSvc.GetPublishedBySlug(slug)
+	p, err := h.postSvc.GetPublishedBySlug(slug, "")
 	if err != nil {
 		if errors.Is(err, service.ErrPostNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
@@ -43,6 +52,19 @@ func (h *CommentHandler) SubmitForSlug(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 反垃圾:honeypot + 提交节流。错误信息故意泛化,不告诉 bot 哪一项触发。
+	if req.Url != nil && *req.Url != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid submission"})
+		return
+	}
+	if req.Ts > 0 {
+		elapsed := time.Duration(time.Now().UnixMilli()-req.Ts) * time.Millisecond
+		if elapsed < minSubmitInterval {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid submission"})
+			return
+		}
 	}
 
 	ip := c.ClientIP()
@@ -67,7 +89,7 @@ func (h *CommentHandler) SubmitForSlug(c *gin.Context) {
 
 func (h *CommentHandler) ListForSlug(c *gin.Context) {
 	slug := decodeParam(c.Param("slug"))
-	p, err := h.postSvc.GetPublishedBySlug(slug)
+	p, err := h.postSvc.GetPublishedBySlug(slug, "")
 	if err != nil {
 		if errors.Is(err, service.ErrPostNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
@@ -126,6 +148,36 @@ func (h *CommentHandler) UpdateStatus(c *gin.Context) {
 func (h *CommentHandler) Delete(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err := h.svc.Delete(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ListTrash 列出软删评论。
+func (h *CommentHandler) ListTrash(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
+	items, total, err := h.svc.ListTrash(page, size)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "total": total, "page": page, "size": size})
+}
+
+func (h *CommentHandler) Restore(c *gin.Context) {
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err := h.svc.Restore(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *CommentHandler) Purge(c *gin.Context) {
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err := h.svc.Purge(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

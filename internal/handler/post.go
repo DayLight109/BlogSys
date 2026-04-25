@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -21,15 +22,16 @@ func NewPostHandler(svc *service.PostService) *PostHandler {
 }
 
 type postReq struct {
-	Title    string   `json:"title" binding:"required,max=255"`
-	Slug     string   `json:"slug" binding:"max=255"`
-	Summary  *string  `json:"summary"`
-	Content  string   `json:"content" binding:"required"`
-	CoverURL *string  `json:"coverUrl"`
-	Status   string   `json:"status"`
-	Tags     []string `json:"tags"`
-	Pinned   *bool    `json:"pinned"`
-	Publish  bool     `json:"publish"`
+	Title     string   `json:"title" binding:"required,max=255"`
+	Slug      string   `json:"slug" binding:"max=255"`
+	Summary   *string  `json:"summary"`
+	Content   string   `json:"content" binding:"required"`
+	CoverURL  *string  `json:"coverUrl"`
+	Status    string   `json:"status"`
+	Tags      []string `json:"tags"`
+	Pinned    *bool    `json:"pinned"`
+	Publish   bool     `json:"publish"`
+	PublishAt *string  `json:"publishAt"` // RFC3339;留空 = 立即发布
 }
 
 func (h *PostHandler) ListPublic(c *gin.Context) {
@@ -51,7 +53,7 @@ func (h *PostHandler) ListPublic(c *gin.Context) {
 
 func (h *PostHandler) GetBySlug(c *gin.Context) {
 	slug := decodeParam(c.Param("slug"))
-	p, err := h.svc.GetPublishedBySlug(slug)
+	p, err := h.svc.GetPublishedBySlug(slug, c.ClientIP())
 	if err != nil {
 		if errors.Is(err, service.ErrPostNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
@@ -144,8 +146,42 @@ func (h *PostHandler) Delete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// ListTrash 列出软删的文章。
+func (h *PostHandler) ListTrash(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
+	posts, total, err := h.svc.ListTrash(page, size)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for i := range posts {
+		posts[i].ContentMD = ""
+		posts[i].ContentHTML = ""
+	}
+	c.JSON(http.StatusOK, gin.H{"items": posts, "total": total, "page": page, "size": size})
+}
+
+func (h *PostHandler) Restore(c *gin.Context) {
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err := h.svc.Restore(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *PostHandler) Purge(c *gin.Context) {
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err := h.svc.Purge(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 func reqToInput(req postReq) service.PostInput {
-	return service.PostInput{
+	in := service.PostInput{
 		Title:    req.Title,
 		Slug:     req.Slug,
 		Summary:  req.Summary,
@@ -156,6 +192,12 @@ func reqToInput(req postReq) service.PostInput {
 		Pinned:   req.Pinned,
 		Publish:  req.Publish,
 	}
+	if req.PublishAt != nil && *req.PublishAt != "" {
+		if t, err := time.Parse(time.RFC3339, *req.PublishAt); err == nil {
+			in.PublishAt = &t
+		}
+	}
+	return in
 }
 
 // GetNeighbors returns { prev, next } for the given slug.

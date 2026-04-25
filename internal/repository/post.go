@@ -109,9 +109,50 @@ func (r *PostRepository) Delete(id uint64) error {
 	return r.db.Delete(&model.Post{}, id).Error
 }
 
+// ListTrash 列出已软删的文章(deleted_at IS NOT NULL)。
+// 必须用 Unscoped() 否则 GORM 默认会过滤掉软删行。
+func (r *PostRepository) ListTrash(page, size int) ([]model.Post, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 100 {
+		size = 20
+	}
+	tx := r.db.Unscoped().Model(&model.Post{}).Where("deleted_at IS NOT NULL")
+	var total int64
+	if err := tx.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var posts []model.Post
+	err := tx.Order("deleted_at DESC, id DESC").
+		Limit(size).Offset((page - 1) * size).Find(&posts).Error
+	return posts, total, err
+}
+
+// Restore 把软删行的 deleted_at 置 NULL。
+func (r *PostRepository) Restore(id uint64) error {
+	return r.db.Unscoped().Model(&model.Post{}).
+		Where("id = ?", id).Update("deleted_at", nil).Error
+}
+
+// Purge 物理删除(无法恢复)。
+func (r *PostRepository) Purge(id uint64) error {
+	return r.db.Unscoped().Delete(&model.Post{}, id).Error
+}
+
 func (r *PostRepository) IncrementView(id uint64) error {
 	return r.db.Model(&model.Post{}).Where("id = ?", id).
 		UpdateColumn("view_count", gorm.Expr("view_count + 1")).Error
+}
+
+// PromoteScheduled 把所有 published_at 已经到点的 scheduled 文章翻成 published。
+// 由 scheduler.Publisher 周期性调用;返回受影响的行数。
+func (r *PostRepository) PromoteScheduled() (int64, error) {
+	res := r.db.Model(&model.Post{}).
+		Where("status = ? AND published_at IS NOT NULL AND published_at <= ?",
+			model.PostStatusScheduled, time.Now()).
+		Update("status", model.PostStatusPublished)
+	return res.RowsAffected, res.Error
 }
 
 // FindNeighbors returns the previous and next published posts for a given post,

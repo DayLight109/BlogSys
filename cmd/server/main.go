@@ -21,6 +21,7 @@ import (
 	"github.com/lilce/blog-api/internal/middleware"
 	"github.com/lilce/blog-api/internal/model"
 	"github.com/lilce/blog-api/internal/repository"
+	"github.com/lilce/blog-api/internal/scheduler"
 	"github.com/lilce/blog-api/internal/service"
 )
 
@@ -59,7 +60,12 @@ func main() {
 
 	// AutoMigrate only for additive, low-risk tables/columns introduced after
 	// the initial golang-migrate run. Core schema still lives in /migrations.
-	if err := db.AutoMigrate(&model.Setting{}, &model.Post{}); err != nil {
+	if err := db.AutoMigrate(
+		&model.Setting{},
+		&model.Post{},
+		&model.Comment{},
+		&model.AuditLog{},
+	); err != nil {
 		log.Fatalf("automigrate: %v", err)
 	}
 
@@ -68,16 +74,16 @@ func main() {
 		log.Fatalf("redis: %v", err)
 	}
 	log.Println("redis connected")
-	_ = rdb
 
 	userRepo := repository.NewUserRepository(db)
 	postRepo := repository.NewPostRepository(db)
 	commentRepo := repository.NewCommentRepository(db)
 	settingRepo := repository.NewSettingRepository(db)
+	auditRepo := repository.NewAuditRepository(db)
 
 	tokenMgr := auth.NewTokenManager(cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 	authSvc := service.NewAuthService(userRepo, tokenMgr, rdb)
-	postSvc := service.NewPostService(postRepo)
+	postSvc := service.NewPostService(postRepo, rdb)
 	settingSvc := service.NewSettingService(settingRepo)
 	commentSvc := service.NewCommentService(commentRepo, postRepo, settingSvc)
 
@@ -155,6 +161,7 @@ func main() {
 	tagH := handler.NewTagHandler(postSvc)
 	settingH := handler.NewSettingHandler(settingSvc)
 	uploadH := handler.NewUploadHandler(cfg.UploadDir, "/uploads")
+	auditH := handler.NewAuditHandler(auditRepo)
 
 	api := r.Group("/api")
 	{
@@ -185,7 +192,7 @@ func main() {
 		api.GET("/settings", settingH.GetPublic)
 
 		admin := api.Group("/admin")
-		admin.Use(middleware.JWTAuth(tokenMgr), middleware.AdminOnly())
+		admin.Use(middleware.JWTAuth(tokenMgr), middleware.AdminOnly(), middleware.Audit(auditRepo))
 		{
 			ap := admin.Group("/posts")
 			{
@@ -208,9 +215,21 @@ func main() {
 				at.POST("/merge", tagH.Merge)
 				at.DELETE("/:name", tagH.Delete)
 			}
+			// 回收站:独立 /admin/trash/* 前缀,避免 /admin/posts/trash 与
+			// /admin/posts/:id 在 Gin radix tree 上的歧义。
+			trash := admin.Group("/trash")
+			{
+				trash.GET("/posts", postH.ListTrash)
+				trash.POST("/posts/:id/restore", postH.Restore)
+				trash.DELETE("/posts/:id", postH.Purge)
+				trash.GET("/comments", commentH.ListTrash)
+				trash.POST("/comments/:id/restore", commentH.Restore)
+				trash.DELETE("/comments/:id", commentH.Purge)
+			}
 			admin.GET("/settings", settingH.GetAdmin)
 			admin.PUT("/settings", settingH.Update)
 			admin.POST("/upload", uploadH.Create)
+			admin.GET("/audit", auditH.List)
 		}
 	}
 
@@ -218,6 +237,11 @@ func main() {
 		log.Fatalf("upload dir: %v", err)
 	}
 	r.Static("/uploads", cfg.UploadDir)
+
+	// scheduled-publish 后台任务:每分钟扫一次 status='scheduled' 已到点的文章。
+	publisherCtx, publisherCancel := context.WithCancel(context.Background())
+	defer publisherCancel()
+	go scheduler.NewPublisher(postRepo).Run(publisherCtx)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.HTTPPort,
@@ -236,6 +260,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("shutting down...")
+	publisherCancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

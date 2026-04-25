@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type StringArray []string
@@ -35,27 +37,29 @@ func (a *StringArray) Scan(src any) error {
 
 const (
 	PostStatusDraft     = "draft"
+	PostStatusScheduled = "scheduled"
 	PostStatusPublished = "published"
 	PostStatusArchived  = "archived"
 )
 
 type Post struct {
-	ID          uint64      `gorm:"primaryKey" json:"id"`
-	Title       string      `gorm:"size:255;not null" json:"title"`
-	Slug        string      `gorm:"size:255;uniqueIndex;not null" json:"slug"`
-	Summary     *string     `gorm:"size:500" json:"summary,omitempty"`
-	ContentMD   string      `gorm:"type:mediumtext;not null" json:"contentMd"`
-	ContentHTML string      `gorm:"type:mediumtext;not null" json:"contentHtml"`
-	CoverURL    *string     `gorm:"size:500" json:"coverUrl,omitempty"`
-	Status      string      `gorm:"size:20;not null;default:draft;index" json:"status"`
-	Tags        StringArray `gorm:"type:json" json:"tags"`
-	Pinned      bool        `gorm:"not null;default:false;index" json:"pinned"`
-	AuthorID    uint64      `gorm:"not null;index" json:"authorId"`
-	Author      *User       `gorm:"foreignKey:AuthorID" json:"author,omitempty"`
-	ViewCount   uint32      `gorm:"not null;default:0" json:"viewCount"`
-	PublishedAt *time.Time  `json:"publishedAt,omitempty"`
-	CreatedAt   time.Time   `json:"createdAt"`
-	UpdatedAt   time.Time   `json:"updatedAt"`
+	ID          uint64         `gorm:"primaryKey" json:"id"`
+	Title       string         `gorm:"size:255;not null" json:"title"`
+	Slug        string         `gorm:"size:255;uniqueIndex;not null" json:"slug"`
+	Summary     *string        `gorm:"size:500" json:"summary,omitempty"`
+	ContentMD   string         `gorm:"type:mediumtext;not null" json:"contentMd"`
+	ContentHTML string         `gorm:"type:mediumtext;not null" json:"contentHtml"`
+	CoverURL    *string        `gorm:"size:500" json:"coverUrl,omitempty"`
+	Status      string         `gorm:"size:20;not null;default:draft;index" json:"status"`
+	Tags        StringArray    `gorm:"type:json" json:"tags"`
+	Pinned      bool           `gorm:"not null;default:false;index" json:"pinned"`
+	AuthorID    uint64         `gorm:"not null;index" json:"authorId"`
+	Author      *User          `gorm:"foreignKey:AuthorID" json:"author,omitempty"`
+	ViewCount   uint32         `gorm:"not null;default:0" json:"viewCount"`
+	PublishedAt *time.Time     `json:"publishedAt,omitempty"`
+	CreatedAt   time.Time      `json:"createdAt"`
+	UpdatedAt   time.Time      `json:"updatedAt"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 func (Post) TableName() string { return "posts" }
