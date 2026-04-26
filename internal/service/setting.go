@@ -27,14 +27,20 @@ func NewSettingService(repo *repository.SettingRepository) *SettingService {
 // Default keys known to the app. Any other key PUT by admin is still persisted
 // but won't be surfaced by the typed GetPublic/GetAdmin shape.
 const (
-	KeyBrandName         = "brand.name"
-	KeyBrandTagline      = "brand.tagline"
-	KeyFooterText        = "footer.text"
-	KeyContactEmail      = "contact.email"
-	KeyContactGithub     = "contact.github"
-	KeyAboutHeroTitle    = "about.hero_title"
-	KeyAboutBodyMd       = "about.body_md"
-	KeySeoSiteTitle      = "seo.site_title"
+	KeyBrandName          = "brand.name"
+	KeyBrandTagline       = "brand.tagline"
+	KeyFooterText         = "footer.text"
+	KeyContactEmail       = "contact.email"
+	KeyContactGithub      = "contact.github"
+	KeyAboutHeroTitle     = "about.hero_title"
+	KeyAboutBodyMd        = "about.body_md"
+	KeyNowHeroTitle       = "now.hero_title"
+	KeyNowBodyMd          = "now.body_md"
+	KeyUsesHeroTitle      = "uses.hero_title"
+	KeyUsesBodyMd         = "uses.body_md"
+	KeyColophonHeroTitle  = "colophon.hero_title"
+	KeyColophonBodyMd     = "colophon.body_md"
+	KeySeoSiteTitle       = "seo.site_title"
 	KeySeoSiteDescription = "seo.site_description"
 	KeyThemeAccent        = "theme.accent"
 	KeyThemeAccentDark    = "theme.accent_dark"
@@ -48,6 +54,12 @@ var knownKeys = map[string]struct{}{
 	KeyContactGithub:      {},
 	KeyAboutHeroTitle:     {},
 	KeyAboutBodyMd:        {},
+	KeyNowHeroTitle:       {},
+	KeyNowBodyMd:          {},
+	KeyUsesHeroTitle:      {},
+	KeyUsesBodyMd:         {},
+	KeyColophonHeroTitle:  {},
+	KeyColophonBodyMd:     {},
 	KeySeoSiteTitle:       {},
 	KeySeoSiteDescription: {},
 	KeyThemeAccent:        {},
@@ -58,17 +70,23 @@ var hexColorRe = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA
 
 // Public is the shape served to anonymous readers on /api/settings.
 type Public struct {
-	Brand   Brand   `json:"brand"`
-	Footer  Footer  `json:"footer"`
-	Contact Contact `json:"contact"`
-	SEO     SEO     `json:"seo"`
-	About   About   `json:"about"`
-	Theme   Theme   `json:"theme"`
+	Brand    Brand   `json:"brand"`
+	Footer   Footer  `json:"footer"`
+	Contact  Contact `json:"contact"`
+	SEO      SEO     `json:"seo"`
+	About    About   `json:"about"`
+	Now      About   `json:"now"`
+	Uses     About   `json:"uses"`
+	Colophon About   `json:"colophon"`
+	Theme    Theme   `json:"theme"`
 }
 
 type Admin struct {
 	Public
-	AboutBodyMd string `json:"aboutBodyMd"`
+	AboutBodyMd    string `json:"aboutBodyMd"`
+	NowBodyMd      string `json:"nowBodyMd"`
+	UsesBodyMd     string `json:"usesBodyMd"`
+	ColophonBodyMd string `json:"colophonBodyMd"`
 }
 
 type Brand struct {
@@ -110,6 +128,12 @@ func (s *SettingService) EnsureDefaults() error {
 		KeyContactGithub:      "https://github.com/kiri",
 		KeyAboutHeroTitle:     "Hello, I'm Kiri.",
 		KeyAboutBodyMd:        defaultAboutMd,
+		KeyNowHeroTitle:       "What I'm doing now.",
+		KeyNowBodyMd:          defaultNowMd,
+		KeyUsesHeroTitle:      "What I use.",
+		KeyUsesBodyMd:         defaultUsesMd,
+		KeyColophonHeroTitle:  "About this site.",
+		KeyColophonBodyMd:     defaultColophonMd,
 		KeySeoSiteTitle:       "Kiri · Notes",
 		KeySeoSiteDescription: "A personal journal on software, systems, and the craft of writing.",
 		KeyThemeAccent:        "#9a2e20",
@@ -136,6 +160,58 @@ This blog is built with [Next.js 16](https://nextjs.org), [Go](https://go.dev), 
 ## Writing, slowly.
 
 *Nothing is published in a hurry.* 文章会隔几天甚至几周才有新的。想订阅就收藏一下 [RSS](/feed.xml),或者直接发邮件给我。
+`
+
+const defaultNowMd = `> Inspired by [/now](https://nownownow.com/about) — a snapshot of what I'm focused on these days, refreshed every few weeks.
+
+## Writing
+- 在写一篇关于 Go 错误处理的长文
+- 整理今年读到过的几本好书
+
+## Reading
+- 《On Writing Well》— William Zinsser
+- 一些 distributed systems 论文
+
+## Building
+- 这个博客本身(it shows up here when I add a feature)
+`
+
+const defaultUsesMd = `## Hardware
+- **Laptop** — 一台不太新的 ThinkPad
+- **Keyboard** — HHKB Professional Hybrid
+- **Display** — 一块够用的 27" 4K
+
+## Editor & shell
+- **Editor** — Neovim + LazyVim
+- **Shell** — fish + starship
+- **Terminal** — Wezterm
+
+## Fonts
+- **Sans** — Geist
+- **Display serif** — Fraunces
+- **Reading serif** — Source Serif 4
+- **Mono** — Geist Mono
+
+## On the web
+- **Browser** — Firefox(daily) / Chromium(work)
+- **Search** — Kagi
+`
+
+const defaultColophonMd = `这个站点是手搓的,不用 CMS,不用模板。
+
+## Stack
+- **Frontend** — [Next.js 16](https://nextjs.org)(App Router)+ Tailwind CSS 4 + shadcn/ui
+- **Backend** — Go + Gin + GORM + MySQL 5.7 + Redis
+- **Markdown** — goldmark + bluemonday(sanitize),Shiki(代码高亮)
+
+## Design notes
+- 主色 **spine red**(#9a2e20)取自旧书脊,搭奶油纸色 background
+- Display serif 用 [Fraunces](https://fonts.google.com/specimen/Fraunces),正文用 [Source Serif 4](https://fonts.google.com/specimen/Source+Serif+4)
+- 几乎所有动效都是纯 CSS:scroll-timeline 阅读进度、view-timeline 段落入场、view transitions 跨页过渡
+- 一切动效在 ` + "`prefers-reduced-motion`" + ` 下静默
+
+## Source
+代码全部开源,欢迎围观。
 `
 
 func (s *SettingService) load() (map[string]string, error) {
@@ -166,10 +242,12 @@ func (s *SettingService) GetPublic() (*Public, error) {
 }
 
 func (s *SettingService) buildPublic(vals map[string]string) *Public {
-	body := vals[KeyAboutBodyMd]
-	html, err := markdown.Render(body)
-	if err != nil {
-		html = ""
+	render := func(key string) string {
+		h, err := markdown.Render(vals[key])
+		if err != nil {
+			return ""
+		}
+		return h
 	}
 	return &Public{
 		Brand: Brand{
@@ -187,7 +265,19 @@ func (s *SettingService) buildPublic(vals map[string]string) *Public {
 		},
 		About: About{
 			HeroTitle: vals[KeyAboutHeroTitle],
-			BodyHTML:  html,
+			BodyHTML:  render(KeyAboutBodyMd),
+		},
+		Now: About{
+			HeroTitle: vals[KeyNowHeroTitle],
+			BodyHTML:  render(KeyNowBodyMd),
+		},
+		Uses: About{
+			HeroTitle: vals[KeyUsesHeroTitle],
+			BodyHTML:  render(KeyUsesBodyMd),
+		},
+		Colophon: About{
+			HeroTitle: vals[KeyColophonHeroTitle],
+			BodyHTML:  render(KeyColophonBodyMd),
 		},
 		Theme: Theme{
 			Accent:     vals[KeyThemeAccent],
@@ -203,8 +293,11 @@ func (s *SettingService) GetAdmin() (*Admin, error) {
 		return nil, err
 	}
 	return &Admin{
-		Public:      *s.buildPublic(vals),
-		AboutBodyMd: vals[KeyAboutBodyMd],
+		Public:         *s.buildPublic(vals),
+		AboutBodyMd:    vals[KeyAboutBodyMd],
+		NowBodyMd:      vals[KeyNowBodyMd],
+		UsesBodyMd:     vals[KeyUsesBodyMd],
+		ColophonBodyMd: vals[KeyColophonBodyMd],
 	}, nil
 }
 
@@ -240,6 +333,12 @@ func validateSettingValue(key, value string) error {
 		KeyContactGithub:      200,
 		KeyAboutHeroTitle:     128,
 		KeyAboutBodyMd:        20000,
+		KeyNowHeroTitle:       128,
+		KeyNowBodyMd:          20000,
+		KeyUsesHeroTitle:      128,
+		KeyUsesBodyMd:         20000,
+		KeyColophonHeroTitle:  128,
+		KeyColophonBodyMd:     20000,
 		KeySeoSiteTitle:       128,
 		KeySeoSiteDescription: 320,
 		KeyThemeAccent:        24,
