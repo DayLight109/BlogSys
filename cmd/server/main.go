@@ -68,6 +68,9 @@ func main() {
 	); err != nil {
 		log.Fatalf("automigrate: %v", err)
 	}
+	if err := database.EnsurePostSearchIndex(db); err != nil {
+		log.Fatalf("post search index: %v", err)
+	}
 
 	rdb, err := database.OpenRedis(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 	if err != nil {

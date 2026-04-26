@@ -266,7 +266,7 @@ func (s *AuthService) ensureRefreshStillValid(ctx context.Context, claims *auth.
 	if err != nil {
 		return err
 	}
-	if claims.IssuedAt.Time.Unix() < cutoff {
+	if claims.IssuedAt.Time.Unix() <= cutoff {
 		return errors.New("refresh token revoked")
 	}
 	return nil

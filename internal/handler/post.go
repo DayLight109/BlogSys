@@ -83,7 +83,10 @@ func (h *PostHandler) ListAdmin(c *gin.Context) {
 }
 
 func (h *PostHandler) GetAdminByID(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	id, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
 	p, err := h.svc.GetByID(id)
 	if err != nil {
 		if errors.Is(err, service.ErrPostNotFound) {
@@ -102,33 +105,51 @@ func (h *PostHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	authorID := c.GetUint64(middleware.CtxUserID)
-	p, err := h.svc.Create(authorID, reqToInput(req))
+	in, err := reqToInput(req)
 	if err != nil {
-		if errors.Is(err, service.ErrSlugTaken) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	authorID := c.GetUint64(middleware.CtxUserID)
+	p, err := h.svc.Create(authorID, in)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrSlugTaken):
 			c.JSON(http.StatusConflict, gin.H{"error": "slug already taken"})
-			return
+		case errors.Is(err, service.ErrInvalidPost), errors.Is(err, service.ErrInvalidPublishAt):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusCreated, p)
 }
 
 func (h *PostHandler) Update(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	id, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
 	var req postReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	p, err := h.svc.Update(id, reqToInput(req))
+	in, err := reqToInput(req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	p, err := h.svc.Update(id, in)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrPostNotFound):
 			c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
 		case errors.Is(err, service.ErrSlugTaken):
 			c.JSON(http.StatusConflict, gin.H{"error": "slug already taken"})
+		case errors.Is(err, service.ErrInvalidPost), errors.Is(err, service.ErrInvalidPublishAt):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
@@ -138,7 +159,10 @@ func (h *PostHandler) Update(c *gin.Context) {
 }
 
 func (h *PostHandler) Delete(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	id, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
 	if err := h.svc.Delete(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -163,7 +187,10 @@ func (h *PostHandler) ListTrash(c *gin.Context) {
 }
 
 func (h *PostHandler) Restore(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	id, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
 	if err := h.svc.Restore(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -172,7 +199,10 @@ func (h *PostHandler) Restore(c *gin.Context) {
 }
 
 func (h *PostHandler) Purge(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	id, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
 	if err := h.svc.Purge(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -180,7 +210,7 @@ func (h *PostHandler) Purge(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-func reqToInput(req postReq) service.PostInput {
+func reqToInput(req postReq) (service.PostInput, error) {
 	in := service.PostInput{
 		Title:    req.Title,
 		Slug:     req.Slug,
@@ -193,11 +223,13 @@ func reqToInput(req postReq) service.PostInput {
 		Publish:  req.Publish,
 	}
 	if req.PublishAt != nil && *req.PublishAt != "" {
-		if t, err := time.Parse(time.RFC3339, *req.PublishAt); err == nil {
-			in.PublishAt = &t
+		t, err := time.Parse(time.RFC3339, *req.PublishAt)
+		if err != nil {
+			return in, errors.New("publishAt must be RFC3339")
 		}
+		in.PublishAt = &t
 	}
-	return in
+	return in, nil
 }
 
 // GetNeighbors returns { prev, next } for the given slug.

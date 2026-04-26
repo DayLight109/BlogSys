@@ -59,12 +59,14 @@ func (h *CommentHandler) SubmitForSlug(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid submission"})
 		return
 	}
-	if req.Ts > 0 {
-		elapsed := time.Duration(time.Now().UnixMilli()-req.Ts) * time.Millisecond
-		if elapsed < minSubmitInterval {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid submission"})
-			return
-		}
+	if req.Ts <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid submission"})
+		return
+	}
+	elapsed := time.Duration(time.Now().UnixMilli()-req.Ts) * time.Millisecond
+	if elapsed < minSubmitInterval {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid submission"})
+		return
 	}
 
 	ip := c.ClientIP()
@@ -128,7 +130,10 @@ type commentStatusReq struct {
 }
 
 func (h *CommentHandler) UpdateStatus(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	id, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
 	var req commentStatusReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -146,7 +151,10 @@ func (h *CommentHandler) UpdateStatus(c *gin.Context) {
 }
 
 func (h *CommentHandler) Delete(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	id, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
 	if err := h.svc.Delete(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -167,7 +175,10 @@ func (h *CommentHandler) ListTrash(c *gin.Context) {
 }
 
 func (h *CommentHandler) Restore(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	id, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
 	if err := h.svc.Restore(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -176,7 +187,10 @@ func (h *CommentHandler) Restore(c *gin.Context) {
 }
 
 func (h *CommentHandler) Purge(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	id, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
 	if err := h.svc.Purge(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

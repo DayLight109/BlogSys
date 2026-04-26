@@ -1,6 +1,12 @@
 package handler
 
-import "net/url"
+import (
+	"net/http"
+	"net/url"
+	"strconv"
+
+	"github.com/gin-gonic/gin"
+)
 
 // decodeParam URL-decodes a path segment captured by Gin.
 //
@@ -14,4 +20,13 @@ func decodeParam(s string) string {
 		return d
 	}
 	return s
+}
+
+func parseIDParam(c *gin.Context, name string) (uint64, bool) {
+	id, err := strconv.ParseUint(c.Param(name), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + name})
+		return 0, false
+	}
+	return id, true
 }

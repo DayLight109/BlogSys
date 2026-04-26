@@ -17,8 +17,10 @@ import (
 )
 
 var (
-	ErrPostNotFound = errors.New("post not found")
-	ErrSlugTaken    = errors.New("slug already taken")
+	ErrPostNotFound     = errors.New("post not found")
+	ErrSlugTaken        = errors.New("slug already taken")
+	ErrInvalidPost      = errors.New("invalid post status")
+	ErrInvalidPublishAt = errors.New("scheduled posts require a future publish time")
 )
 
 type PostService struct {
@@ -127,10 +129,13 @@ func (s *PostService) Create(authorID uint64, in PostInput) (*model.Post, error)
 	if status == "" {
 		status = model.PostStatusDraft
 	}
+	if !validPostStatus(status) {
+		return nil, ErrInvalidPost
+	}
 	now := time.Now()
 	var publishedAt *time.Time
 	switch {
-	case in.PublishAt != nil && in.PublishAt.After(now):
+	case in.Publish && in.PublishAt != nil && in.PublishAt.After(now):
 		// 预约发布:状态置为 scheduled,published_at 写到目标时刻,
 		// 后台 publisher goroutine 到点把 status 翻成 published。
 		t := *in.PublishAt
@@ -139,6 +144,12 @@ func (s *PostService) Create(authorID uint64, in PostInput) (*model.Post, error)
 	case in.Publish || status == model.PostStatusPublished:
 		publishedAt = &now
 		status = model.PostStatusPublished
+	case status == model.PostStatusScheduled:
+		if in.PublishAt == nil || !in.PublishAt.After(now) {
+			return nil, ErrInvalidPublishAt
+		}
+		t := *in.PublishAt
+		publishedAt = &t
 	}
 
 	p := &model.Post{
@@ -200,11 +211,14 @@ func (s *PostService) Update(id uint64, in PostInput) (*model.Post, error) {
 
 	wasPublished := p.Status == model.PostStatusPublished
 	if in.Status != "" {
+		if !validPostStatus(in.Status) {
+			return nil, ErrInvalidPost
+		}
 		p.Status = in.Status
 	}
 	now := time.Now()
 	switch {
-	case in.PublishAt != nil && in.PublishAt.After(now):
+	case in.Publish && in.PublishAt != nil && in.PublishAt.After(now):
 		// 改成"未来某时发布":覆盖 published_at,翻 status 成 scheduled。
 		t := *in.PublishAt
 		p.PublishedAt = &t
@@ -212,6 +226,14 @@ func (s *PostService) Update(id uint64, in PostInput) (*model.Post, error) {
 	case in.Publish && !wasPublished:
 		p.PublishedAt = &now
 		p.Status = model.PostStatusPublished
+	case p.Status == model.PostStatusScheduled:
+		if in.PublishAt != nil && in.PublishAt.After(now) {
+			t := *in.PublishAt
+			p.PublishedAt = &t
+		}
+		if p.PublishedAt == nil || !p.PublishedAt.After(now) {
+			return nil, ErrInvalidPublishAt
+		}
 	}
 
 	if err := s.posts.Update(p); err != nil {
@@ -412,4 +434,13 @@ func normalizeSlug(slug, fallbackTitle string) string {
 		out = out[:200]
 	}
 	return out
+}
+
+func validPostStatus(status string) bool {
+	switch status {
+	case model.PostStatusDraft, model.PostStatusScheduled, model.PostStatusPublished, model.PostStatusArchived:
+		return true
+	default:
+		return false
+	}
 }
