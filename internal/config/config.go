@@ -27,6 +27,21 @@ type Config struct {
 
 	UploadDir    string
 	UploadPubURL string
+
+	OpenAIAPIKey        string
+	OpenAIBaseURL       string
+	OpenAIModel         string
+	OpenAIModels        []string // optional allow-list of models the client may pick
+	OpenAIWebSearchTool string   // legacy — Responses-API tool type name (kept for back-compat, currently unused)
+	// OpenAIWebSearchModel is the Chat-Completions search-preview model id we
+	// transparently swap to whenever the user toggles web search ON. The
+	// regular chat-completions endpoint cannot enable hosted web search via
+	// the `tools` field — only via these dedicated model variants paired with
+	// a `web_search_options:{}` knob. Examples:
+	//   - gpt-4o-search-preview
+	//   - gpt-4o-mini-search-preview
+	//   - gpt-5-search-api
+	OpenAIWebSearchModel string
 }
 
 func Load() *Config {
@@ -53,6 +68,13 @@ func Load() *Config {
 
 		UploadDir:    getEnv("UPLOAD_DIR", "./uploads"),
 		UploadPubURL: getEnv("UPLOAD_PUB_URL", "http://localhost:8080/uploads"),
+
+		OpenAIAPIKey:         getEnv("OPENAI_API_KEY", ""),
+		OpenAIBaseURL:        normalizeOpenAIBaseURL(getEnv("OPENAI_BASE_URL", "https://api.openai.com/v1")),
+		OpenAIModel:          getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+		OpenAIModels:         parseList(getEnv("OPENAI_MODELS", "")),
+		OpenAIWebSearchTool:  getEnv("OPENAI_WEB_SEARCH_TOOL", ""),
+		OpenAIWebSearchModel: getEnv("OPENAI_WEB_SEARCH_MODEL", "gpt-4o-mini-search-preview"),
 	}
 }
 
@@ -73,6 +95,13 @@ func normalizeAppEnv(v string) string {
 	}
 }
 
+func normalizeOpenAIBaseURL(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimRight(v, "/")
+	v = strings.TrimSuffix(v, "/chat/completions")
+	return strings.TrimRight(v, "/")
+}
+
 func getEnv(key, fallback string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		return v
@@ -87,4 +116,22 @@ func getEnvInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// parseList splits a comma-separated env value into trimmed, non-empty parts.
+// Empty input returns nil — distinct from an empty slice — so callers can tell
+// "feature unconfigured" from "explicitly empty list".
+func parseList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

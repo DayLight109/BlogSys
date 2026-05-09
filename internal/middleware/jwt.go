@@ -51,3 +51,34 @@ func AdminOnly() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// SoftJWTAuth tries to parse an Authorization Bearer token and attaches
+// claims to the gin context when valid. Unlike JWTAuth, missing or invalid
+// tokens DO NOT abort the request — the handler proceeds anonymously.
+//
+// Used on routes that are public by default (e.g. /chat/completions) but
+// have admin-only enrichment paths (memory injection, server-side session
+// persistence) that key off userID when present.
+func SoftJWTAuth(tm *auth.TokenManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		header := c.GetHeader("Authorization")
+		if !strings.HasPrefix(header, "Bearer ") {
+			c.Next()
+			return
+		}
+		tokenStr := strings.TrimPrefix(header, "Bearer ")
+		claims, err := tm.Parse(tokenStr)
+		if err != nil {
+			c.Next()
+			return
+		}
+		if claims.Type != auth.TypeAccess {
+			c.Next()
+			return
+		}
+		c.Set(CtxUserID, claims.UserID)
+		c.Set(CtxUsername, claims.Username)
+		c.Set(CtxRole, claims.Role)
+		c.Next()
+	}
+}

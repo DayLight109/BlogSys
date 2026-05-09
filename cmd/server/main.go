@@ -65,6 +65,10 @@ func main() {
 		&model.Post{},
 		&model.Comment{},
 		&model.AuditLog{},
+		&model.ChatSession{},
+		&model.ChatMessage{},
+		&model.ChatMemory{},
+		&model.ChatShare{},
 	); err != nil {
 		log.Fatalf("automigrate: %v", err)
 	}
@@ -83,6 +87,10 @@ func main() {
 	commentRepo := repository.NewCommentRepository(db)
 	settingRepo := repository.NewSettingRepository(db)
 	auditRepo := repository.NewAuditRepository(db)
+	chatSessionRepo := repository.NewChatSessionRepository(db)
+	chatMessageRepo := repository.NewChatMessageRepository(db)
+	chatMemoryRepo := repository.NewChatMemoryRepository(db)
+	chatShareRepo := repository.NewChatShareRepository(db)
 
 	tokenMgr := auth.NewTokenManager(cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 	authSvc := service.NewAuthService(userRepo, tokenMgr, rdb)
@@ -153,6 +161,7 @@ func main() {
 	// legit user fat-finger a few times.
 	loginLimiter := middleware.NewLimiter(5, time.Minute)
 	commentLimiter := middleware.NewLimiter(10, time.Minute)
+	chatLimiter := middleware.NewLimiter(20, time.Minute)
 
 	// Secure refresh cookie when running behind HTTPS in prod.
 	secureCookies := cfg.IsProd()
@@ -165,6 +174,26 @@ func main() {
 	settingH := handler.NewSettingHandler(settingSvc)
 	uploadH := handler.NewUploadHandler(cfg.UploadDir, "/uploads")
 	auditH := handler.NewAuditHandler(auditRepo)
+	chatSvc := service.NewChatService(
+		cfg.OpenAIAPIKey,
+		cfg.OpenAIBaseURL,
+		cfg.OpenAIModel,
+		cfg.OpenAIModels,
+		cfg.OpenAIWebSearchTool,
+		cfg.OpenAIWebSearchModel,
+	)
+	memorySvc := service.NewMemoryService(chatMemoryRepo, chatSvc)
+	log.Printf(
+		"chat configured=%t base_url=%s model=%s api_key_set=%t models=%v web_search_tool=%q web_search_model=%q",
+		chatSvc.Configured(),
+		chatSvc.BaseURL(),
+		chatSvc.Model(),
+		cfg.OpenAIAPIKey != "",
+		chatSvc.AllowedModels(),
+		cfg.OpenAIWebSearchTool,
+		cfg.OpenAIWebSearchModel,
+	)
+	chatH := handler.NewChatHandler(chatSvc, memorySvc, chatMemoryRepo, chatSessionRepo, chatMessageRepo, chatShareRepo)
 
 	api := r.Group("/api")
 	{
@@ -193,6 +222,9 @@ func main() {
 		api.GET("/search", postH.Search)
 		api.GET("/tags", tagH.List)
 		api.GET("/settings", settingH.GetPublic)
+		api.POST("/chat/completions", middleware.SoftJWTAuth(tokenMgr), middleware.RateLimit(chatLimiter), chatH.Complete)
+		api.GET("/chat/config", chatH.Config)
+		api.GET("/chat/shares/:hash", chatH.ReadShare)
 
 		admin := api.Group("/admin")
 		admin.Use(middleware.JWTAuth(tokenMgr), middleware.AdminOnly(), middleware.Audit(auditRepo))
@@ -233,6 +265,19 @@ func main() {
 			admin.PUT("/settings", settingH.Update)
 			admin.POST("/upload", uploadH.Create)
 			admin.GET("/audit", auditH.List)
+			admin.GET("/chat/memories", chatH.ListMemories)
+			admin.DELETE("/chat/memories/:id", chatH.DeleteMemory)
+			adminChat := admin.Group("/chat/sessions")
+			{
+				adminChat.GET("", chatH.ListSessions)
+				adminChat.POST("", chatH.UpsertSession)
+				adminChat.PATCH("/:client_id", chatH.PatchSession)
+				adminChat.DELETE("/:client_id", chatH.DeleteSession)
+				adminChat.GET("/:client_id/messages", chatH.ListSessionMessages)
+				adminChat.POST("/:client_id/messages", chatH.UpsertSessionMessage)
+				adminChat.DELETE("/:client_id/messages/:msg_client_id", chatH.DeleteSessionMessage)
+			}
+			admin.POST("/chat/shares", chatH.CreateShare)
 		}
 	}
 
